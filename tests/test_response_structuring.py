@@ -1,9 +1,14 @@
 from foundationevals.chatbots import Chatbot
+import pytest
 
 
-def test_can_structure_a_badly_structured_response():
+several_models = pytest.mark.parametrize("model", ["gemma", "llama2", "mistral"])
+
+
+@several_models
+def test_can_structure_a_badly_structured_response(model):
     bot = Chatbot(
-        "llama2",
+        model,
         messages=[
             {"role": "user", "content": "What is 2 + 2?"},
             {"role": "assistant", "content": "The answer to 2 + 2 is 4."},
@@ -13,9 +18,10 @@ def test_can_structure_a_badly_structured_response():
     assert bot.structure(int) == 4
 
 
-def test_can_extract_a_list_of_ints_from_a_response():
+@several_models
+def test_can_extract_a_list_of_ints_from_a_response(model):
     bot = Chatbot(
-        "llama2",
+        model,
         messages=[
             {"role": "user", "content": "What are the first three prime numbers?"},
             {
@@ -28,9 +34,10 @@ def test_can_extract_a_list_of_ints_from_a_response():
     assert bot.structure(list[int]) == [2, 3, 5]
 
 
-def test_can_extract_a_list_of_strings_from_a_response():
+@several_models
+def test_can_extract_a_list_of_strings_from_a_response(model):
     bot = Chatbot(
-        "llama2",
+        model,
         messages=[
             {"role": "user", "content": "Please list three words starting with Q"},
             {

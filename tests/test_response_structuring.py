@@ -48,3 +48,25 @@ def test_can_extract_a_list_of_strings_from_a_response(model):
     )
 
     assert bot.structure(list[str]) == ["Queen", "Question", "Quiet"]
+
+
+@several_models
+def test_can_extract_a_list_of_strings_from_an_overly_chatty_response(model):
+    bot = Chatbot(
+        model,
+        messages=[
+            {"role": "user", "content": "Please list 5 capital cities."},
+            {
+                "role": "assistant",
+                "content": "1. London, United Kingdom: The capital city of the United Kingdom is located in southeastern England on the River Thames. It is the most populous city in the European Union and has a rich history as a global cultural, financial and political center.\n\n2. Paris, France: Paris is the capital city of France and is considered the City of Light due to its role in the French Revolution and its influence on arts, culture, and science. It is located in northern France and is known for its iconic landmarks such as the Eiffel Tower, Louvre Museum, Notre-Dame Cathedral, and Montmartre.\n\n3. Madrid, Spain: Madrid is the capital city of Spain and is located in the center of the country. It is the largest city in Spain and is known for its beautiful parks, museums, and historic sites such as the Prado Museum, Royal Palace, and Retiro Park.\n\n4. Canberra, Australia: Canberra is the capital city of Australia and is located in the Australian Capital Territory (ACT). It was designed as a planned city and is known for its beautiful gardens, museums, and galleries such as the National Gallery of Australia, Parliament House, and Lake Burley Griffin.\n\n5. Ottawa, Canada: Ottawa is the capital city of Canada and is located in eastern Ontario near the border with Quebec. It is known for its beautiful parks, museums, and historic sites such as the Canadian Museum of History, Rideau Canal, and Parliament Hill.",
+            },
+        ],
+    )
+
+    assert bot.structure(list[str]) == [
+        "London",
+        "Paris",
+        "Madrid",
+        "Canberra",
+        "Ottawa",
+    ]

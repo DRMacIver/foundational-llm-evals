@@ -40,3 +40,25 @@ def test_bigness_evaluation():
     assert report.correct_answer_rate > 0
     assert report.answer_rate > 0
     assert 0 < report.confidence_calibration <= 1
+
+
+def always_fails(evaluation: SingleProblemEvaluation[int, bool]) -> None:
+    evaluation.chatbot.chat(f"Is {evaluation.problem} bigger than 10?", response="Yes")
+    evaluation.mark_answer(True)
+    evaluation.record_confidence(1.0)
+    evaluation.add_error("This evaluation should always fail.")
+
+
+def test_always_failing_example():
+    report = run_basic_evaluation(
+        SmallIntegerProblemSet(),
+        always_fails,
+        chatbot=Chatbot("dummy"),
+        n_samples=10,
+        reduce=True,
+    )
+    assert report.correct_answer_rate == 0
+    assert report.answer_rate == 1
+
+    assert report.reduced_exemplar is not None
+    assert report.reduced_exemplar.problem == 0

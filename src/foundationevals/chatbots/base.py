@@ -78,7 +78,9 @@ def extract_json_objects(text: str) -> list[dict[str, Any] | list[Any]]:
 class Chatbot:
     def __new__(cls, model, **kwargs):
         kwargs["model"] = model
-        if model.startswith("claude"):
+        if model == "dummy":
+            subclass = DummyChatbot
+        elif model.startswith("claude"):
             from foundationevals.chatbots.claude import Claude
 
             subclass = Claude
@@ -118,7 +120,7 @@ class Chatbot:
     def freeze(self):
         self.__frozen = True
 
-    def chat(self, message: str) -> str:
+    def chat(self, message: str, response: str | None = None) -> str:
         """Send a message to the chatbot and return the response."""
         if self.__frozen:
             raise RuntimeError(
@@ -130,7 +132,7 @@ class Chatbot:
                 "content": message,
             }
         )
-        result = self.complete()
+        result = self.complete() if response is None else response
         self.messages.append({"role": "assistant", "content": result})
         return result
 
@@ -252,3 +254,11 @@ class Chatbot:
     def complete(self) -> str:
         """Complete the current conversation with the assistant."""
         ...
+
+
+class DummyChatbot(Chatbot):
+    def new_client(self) -> Any:
+        return None
+
+    def complete(self) -> str:
+        raise TypeError("Dummy chatbot cannot complete conversations.")

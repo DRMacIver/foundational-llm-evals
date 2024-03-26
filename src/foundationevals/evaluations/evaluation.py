@@ -1,12 +1,17 @@
 from random import Random
-from typing import Generic, TypeVar, Type, Callable
+from typing import Generic, TypeVar, Type, Callable, Any
 from enum import Enum
+
 from foundationevals.chatbots.base import Chatbot, FailedToAnswer, Message
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 from abc import ABC, abstractmethod
 from pydantic import BaseModel, ConfigDict
 from concurrent.futures import ThreadPoolExecutor
-
+from shrinkray.problem import BasicReductionProblem
+from shrinkray.reducer import ShrinkRay
+import trio
+from random import Random
+from shrinkray.work import WorkContext, Volume
 
 Problem = TypeVar("Problem")
 Answer = TypeVar("Answer")
@@ -138,12 +143,15 @@ class ProblemSet(ABC, Generic[Problem]):
             for cls in self.__class__.mro():
                 if hasattr(cls, "__orig_bases__"):
                     for base in cls.__orig_bases__:
-                        if base.__origin__ == ProblemSet:
+                        if (
+                            hasattr(base, "__origin__")
+                            and base.__origin__ == ProblemSet
+                        ):
                             problem_type = base.__args__[0]
                             if isinstance(problem_type, type):
                                 self.__problem_type = problem_type
                                 break
-            else:
+            if self.__problem_type is None:
                 raise ValueError(
                     "Could not determine problem type. Please set it explicitly."
                 )
@@ -162,10 +170,48 @@ class ProblemSet(ABC, Generic[Problem]):
     def load(self, data: bytes) -> Problem:
         return self.type_adapter.validate_json(data)
 
+    def reduction_key(self, problem: Problem) -> Any:
+        data = self.dump(problem)
+        return (len(data), data)
+
+    def hashable_key(self, problem: Problem) -> Any:
+        try:
+            hash(problem)
+            return problem
+        except TypeError:
+            pass
+        return self.dump(problem)
+
     def reduce(
-        self, problem: Problem, is_interesting: Callable[[Problem], bool]
+        self,
+        problem: Problem,
+        is_interesting: Callable[[Problem], bool],
+        parallelism: int = 1,
     ) -> Problem:
-        return problem
+        async def is_interesting_async(data: bytes) -> bool:
+            try:
+                parsed = self.load(data)
+            except ValidationError:
+                return False
+            return await trio.to_thread.run_sync(is_interesting, parsed)
+
+        work = WorkContext(
+            random=Random(0),
+            volume=Volume.quiet,
+            parallelism=parallelism,
+        )
+
+        reduction_problem = BasicReductionProblem(
+            initial=self.dump(problem),
+            is_interesting=is_interesting_async,
+            work=work,
+        )
+
+        reducer = ShrinkRay(reduction_problem)
+
+        trio.run(reducer.run)
+
+        return self.load(reduction_problem.current_test_case)
 
     @abstractmethod
     def generate(self, random: Random) -> Problem: ...
@@ -190,7 +236,7 @@ class FullReport(BaseModel, Generic[Problem, Answer]):
 
     initial_random_sample: list[SingleProblemReport[Problem, Answer]]
     other_samples: list[SingleProblemReport[Problem, Answer]]
-    reduced_exemplar: SingleProblemEvaluation[Problem, Answer] | None
+    reduced_exemplar: SingleProblemReport[Problem, Answer] | None
 
     @property
     def sample_size(self):
@@ -213,6 +259,16 @@ class FullReport(BaseModel, Generic[Problem, Answer]):
                 report
                 for report in self.initial_random_sample
                 if report.status == ReportedStatus.CORRECT
+            ]
+        )
+
+    @cached_property
+    def incorrect_answers(self):
+        return len(
+            [
+                report
+                for report in self.initial_random_sample
+                if report.status == ReportedStatus.INCORRECT
             ]
         )
 
@@ -239,6 +295,7 @@ class FullReport(BaseModel, Generic[Problem, Answer]):
             if report.status == ReportedStatus.NONANSWER:
                 continue
             confidence = report.confidence
+            assert confidence is not None
 
             if report.status == ReportedStatus.CORRECT:
                 brier_score_sum += (1 - confidence) ** 2
@@ -259,7 +316,7 @@ def run_basic_evaluation(
     parallelism=1,
     reduce=False,
     answer_type=None,
-):
+) -> FullReport[Problem, Answer]:
     chatbot.freeze()
     if random is None:
         random = Random()
@@ -299,11 +356,43 @@ def run_basic_evaluation(
             )
         )
 
-    assert not reduce
+    other_samples = []
+    reduced_exemplar = None
+    problem_to_report = {}
+
+    if reduce:
+        incorrect_answers = [
+            r for r in initial_results if r.status == ReportedStatus.INCORRECT
+        ]
+        if incorrect_answers:
+            incorrect_answers = [r for r in incorrect_answers]
+            target_confidence = max([r.confidence or 0.0 for r in incorrect_answers])
+            maximally_confident_incorrect_answers = [
+                r for r in incorrect_answers if r.confidence == target_confidence
+            ]
+            assert maximally_confident_incorrect_answers
+            exemplar_problem = min(
+                maximally_confident_incorrect_answers,
+                key=lambda r: problem_set.reduction_key(r.problem),
+            )
+
+            def is_interesting(problem: Problem) -> bool:
+                report = evaluate_problem(problem)
+                other_samples.append(report)
+                problem_to_report[problem_set.hashable_key(problem)] = report
+                if report.status != ReportedStatus.INCORRECT:
+                    return False
+                return (report.confidence or 0.0) >= target_confidence
+
+            reduced_exemplar = problem_to_report[
+                problem_set.hashable_key(
+                    problem_set.reduce(exemplar_problem.problem, is_interesting)
+                )
+            ]
 
     return FullReport(
         model=chatbot.model,
         initial_random_sample=initial_results,
-        other_samples=[],
-        reduced_exemplar=None,
+        other_samples=other_samples,
+        reduced_exemplar=reduced_exemplar,
     )

@@ -41,6 +41,7 @@ pydantic = "^2.6.4"
 click = "^8.1.7"
 tenacity = "^8.2.3"
 jsonschema = "^4.21.1"
+shrinkray = {git = "https://github.com/DRMacIver/shrinkray.git"}
 
 [tool.poetry.group.dev.dependencies]
 ipython = "^8.22.2"

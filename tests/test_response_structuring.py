@@ -136,3 +136,45 @@ def test_will_raise_failed_to_answer_on_refusal(model):
 
     with pytest.raises(FailedToAnswer):
         bot.structure(str)
+
+
+@several_models
+@pytest.mark.parametrize(
+    "response,parse",
+    [
+        (
+            "Yes, 72 is bigger than 10. The number 72, has a greater value than the number 10.",
+            True,
+        ),
+        ("No, 72 is not bigger than 10. In fact, 10 is smaller than 72.", False),
+    ],
+)
+def test_will_structure_yes_no_as_boolean(model, response, parse):
+    bot = Chatbot(
+        model,
+        messages=[
+            {"role": "user", "content": "Is 72 bigger than 10?"},
+            {
+                "role": "assistant",
+                "content": response,
+            },
+        ],
+    )
+
+    assert bot.structure(bool) == parse
+
+
+@several_models
+def test_yes_no_with_long_answer(model):
+    bot = Chatbot(
+        model,
+        messages=[
+            {"role": "user", "content": "Is 45 bigger than 10?"},
+            {
+                "role": "assistant",
+                "content": "Yes, 45 is bigger than 10. The number 45 is fifteen more than the number 30, and ten is less than thirty. So, when comparing the two numbers directly, we can see that 45 has a greater value than 10.",
+            },
+        ],
+    )
+
+    assert bot.structure(bool)

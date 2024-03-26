@@ -1,6 +1,7 @@
 from typing import TypedDict, Literal, Any, Type, TypeVar
 from pydantic import TypeAdapter, ValidationError
 import json
+import re
 
 T = TypeVar("T")
 
@@ -22,6 +23,8 @@ REFUSAL_PHRASES = [
     "my purpose is to assist and provide helpful responses",
 ]
 
+
+PERCENTAGE = re.compile(r"([0-9]+(?:\.[0-9]*)?)%")
 
 STRUCTURING_PROMPT = """
 Please provide a structured representation of your previous
@@ -105,14 +108,22 @@ class Chatbot:
         self.max_tokens = max_tokens
         self.__client = None
         self.children = []
+        self.__frozen = False
 
     @property
     def name(self):
         """A stable name to use for this chatbot instance."""
         return self.model
 
+    def freeze(self):
+        self.__frozen = True
+
     def chat(self, message: str) -> str:
         """Send a message to the chatbot and return the response."""
+        if self.__frozen:
+            raise RuntimeError(
+                "Cannot chat with a frozen chatbot. Clone this if you want to chat."
+            )
         self.messages.append(
             {
                 "role": "user",
@@ -144,13 +155,6 @@ class Chatbot:
             parts.append(f"{message['role']}: {message['content']}\n")
         return "\n".join(parts)
 
-    def __extract_box_boundary(self, question: str) -> str:
-        text = self.clone().chat(question)
-        last_line = text.splitlines()[-1].strip()
-        if last_line[0] == last_line[-1] in ['"', "'", "`"]:
-            last_line = last_line[1:-1]
-        return last_line
-
     @property
     def last_response(self):
         """The last response from the chatbot."""
@@ -158,6 +162,9 @@ class Chatbot:
         return self.messages[-1]["content"]
 
     def did_the_bot_answer(self) -> bool:
+        """Checks whether the last response is a refusal or other
+        failure to answer, returning True if the bot believes it
+        has actually answered the question."""
         refusal_checking_bot = self.clone()
 
         check_for_refusal = refusal_checking_bot.chat(
@@ -171,6 +178,29 @@ class Chatbot:
         else:
             return "yes" in check_for_refusal
 
+    def confidence(self) -> float:
+        """Return the confidence of the last response, as a float
+        between 0 and 1, with 1 indicating certainty and 0 indicating
+        that it's certain the answer is wrong."""
+        bot = self.clone()
+        response = bot.chat(
+            "On a scale of 0% to 100%, where 0% indicates that you're "
+            "certain the answer is wrong and 100% indicates that you're "
+            "certain the answer is right, how confident are you in the "
+            "answer to your previous question?"
+        )
+        confidence = PERCENTAGE.search(response)
+        if confidence is None:
+            raise ResponseParsingError(
+                "Failed to determine confidence:\n " + bot.transcript()
+            )
+        result = float(confidence.group(1)) / 100
+        if not (0 <= result <= 1):
+            raise ResponseParsingError(
+                f"Failed to determine confidence, got invalid value {result}:\n {bot.transcript()}"
+            )
+        return result
+
     def structure(self, target: Type[T]) -> T:
         """Takes the last message from this chatbot and tries to convert it
         to a structured value of type T."""
@@ -181,10 +211,6 @@ class Chatbot:
         # When adding a new evaluation or testing a new model you are *extremely
         # strongly encouraged* to add new tests to test_response_structuring.py
         # to make sure that it correctly structures the responses you are seeing.
-
-        if target == str and False:
-            # In this case T == str, but the type checker can't reason about that.
-            return self.extract_just_the_answer()  # type: ignore
 
         structuring_bot = self.clone()
 
@@ -225,3 +251,4 @@ class Chatbot:
 
     def complete(self) -> str:
         """Complete the current conversation with the assistant."""
+        ...

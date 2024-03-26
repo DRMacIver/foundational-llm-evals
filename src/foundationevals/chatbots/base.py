@@ -10,6 +10,19 @@ class Message(TypedDict):
     content: str
 
 
+REFUSAL_PHRASES = [
+    "i apologize, but i cannot",
+    "it goes against ethical and moral standards",
+    "i cannot promote or encourage the use of offensive language",
+    "it's important to always use respectful and appropriate language",
+    "i cannot fulfill that request",
+    "i cannot fulfill your request",
+    "i'm just an ai",
+    "i cannot provide",
+    "my purpose is to assist and provide helpful responses",
+]
+
+
 STRUCTURING_PROMPT = """
 Please provide a structured representation of your previous
 answer as a JSON value matching the following schema: {SCHEMA}.
@@ -38,13 +51,24 @@ def extract_json_objects(text: str) -> list[dict[str, Any] | list[Any]]:
     results = []
     stack = []
     for i, c in enumerate(text):
-        if c in "{[":
-            stack.append(i)
+        fragment = None
+        if c == '"':
+            if stack and stack[-1][0] == '"':
+                opener, start = stack.pop()
+                fragment = text[start : i + 1]
+            else:
+                stack.append((c, i))
+        elif c in "{[":
+            stack.append((c, i))
         elif c in "]}":
             if stack:
-                start = stack.pop()
-                if not stack:
-                    results.append(json.loads(text[start : i + 1]))
+                opener, start = stack.pop()
+                fragment = text[start : i + 1]
+        if fragment and not stack:
+            try:
+                results.append(json.loads(fragment))
+            except json.JSONDecodeError:
+                results.extend(extract_json_objects(text[start + 1 : i]))
     return results
 
 
@@ -114,11 +138,38 @@ class Chatbot:
             self.__client = self.new_client()
         return self.__client
 
-    def dialogue(self):
+    def transcript(self) -> str:
         parts = []
         for message in self.messages:
             parts.append(f"{message['role']}: {message['content']}\n")
         return "\n".join(parts)
+
+    def __extract_box_boundary(self, question: str) -> str:
+        text = self.clone().chat(question)
+        last_line = text.splitlines()[-1].strip()
+        if last_line[0] == last_line[-1] in ['"', "'", "`"]:
+            last_line = last_line[1:-1]
+        return last_line
+
+    @property
+    def last_response(self):
+        """The last response from the chatbot."""
+        assert self.messages and self.messages[-1]["role"] == "assistant"
+        return self.messages[-1]["content"]
+
+    def did_the_bot_answer(self) -> bool:
+        refusal_checking_bot = self.clone()
+
+        check_for_refusal = refusal_checking_bot.chat(
+            "Does your answer contain the information I requested? Don't apologise or explain, please just say 'yes' or 'no'"
+        ).lower()
+
+        if check_for_refusal.startswith("yes"):
+            return True
+        elif check_for_refusal.startswith("no"):
+            return False
+        else:
+            return "yes" in check_for_refusal
 
     def structure(self, target: Type[T]) -> T:
         """Takes the last message from this chatbot and tries to convert it
@@ -131,10 +182,19 @@ class Chatbot:
         # strongly encouraged* to add new tests to test_response_structuring.py
         # to make sure that it correctly structures the responses you are seeing.
 
+        if target == str and False:
+            # In this case T == str, but the type checker can't reason about that.
+            return self.extract_just_the_answer()  # type: ignore
+
         structuring_bot = self.clone()
 
         adapter = TypeAdapter(target)
 
+        if any(refusal in self.last_response.lower() for refusal in REFUSAL_PHRASES):
+            if not self.did_the_bot_answer():
+                raise FailedToAnswer(
+                    "Chatbot failed to provide an answer to the question."
+                )
         response = structuring_bot.chat(
             STRUCTURING_PROMPT.format(SCHEMA=json.dumps(adapter.json_schema()))
         )
@@ -154,17 +214,12 @@ class Chatbot:
                 except ValidationError:
                     pass
 
-        refusal_checking_bot = self.clone()
-
-        check_for_refusal = refusal_checking_bot.chat(
-            "Does your answer contain the information I requested? Don't apologise or explain, please just say 'yes' or 'no'"
-        )
-        if "no" in check_for_refusal.lower():
-            raise FailedToAnswer("Chatbot failed to provide an answer to the question.")
-        else:
+        if self.did_the_bot_answer():
             raise ResponseParsingError(
-                f"Something went wrong in interacting with chatbot:\n\n{self.dialogue()}"
+                f"Something went wrong in interacting with chatbot:\n\n{structuring_bot.transcript()}"
             )
+        else:
+            raise FailedToAnswer("Chatbot failed to provide an answer to the question.")
 
     def new_client(self) -> Any: ...
 

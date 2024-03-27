@@ -1,7 +1,7 @@
 from random import Random
 from typing import Generic, TypeVar, Type, Callable, Any
-from enum import Enum
-
+from enum import Enum, auto
+import traceback
 from foundationevals.chatbots.base import Chatbot, FailedToAnswer, Message
 from pydantic import TypeAdapter, ValidationError
 from abc import ABC, abstractmethod
@@ -12,15 +12,16 @@ from shrinkray.reducer import ShrinkRay
 import trio
 from random import Random
 from shrinkray.work import WorkContext, Volume
+from tqdm import tqdm, trange
 
 Problem = TypeVar("Problem")
 Answer = TypeVar("Answer")
 
 
 class EvaluationResultStatus(Enum):
-    INCOMPLETE = 0
-    NONANSWER = 1
-    ANSWER = 2
+    INCOMPLETE = auto()
+    NONANSWER = auto()
+    ANSWER = auto()
 
 
 class NoValidAnswer(Exception):
@@ -28,9 +29,9 @@ class NoValidAnswer(Exception):
 
 
 class ReportedStatus(Enum):
-    CORRECT = 0
-    INCORRECT = 1
-    NONANSWER = 2
+    CORRECT = auto()
+    INCORRECT = auto()
+    NONANSWER = auto()
 
 
 class SingleProblemReport(BaseModel, Generic[Problem]):
@@ -40,6 +41,7 @@ class SingleProblemReport(BaseModel, Generic[Problem]):
     errors: set[str]
     notes: list[str]
     transcripts: list[list[Message]]
+    stack_trace: str | None
 
 
 class SingleProblemEvaluation(Generic[Problem]):
@@ -50,6 +52,7 @@ class SingleProblemEvaluation(Generic[Problem]):
         self.errors: set[str] = set()
         self.notes: list[str] = []
         self.confidence: float | None = None
+        self.stack_trace = None
 
     def mark_nonanswer(self):
         self.__check_incomplete()
@@ -59,11 +62,13 @@ class SingleProblemEvaluation(Generic[Problem]):
         self.__check_incomplete()
         self.status = EvaluationResultStatus.ANSWER
 
-    def record_confidence(self, confidence: float):
-        if not (0 <= confidence <= 1):
+    def record_confidence(self, confidence: float | None = None):
+        if confidence is not None and not (0 <= confidence <= 1):
             raise ValueError(f"Invalid confidence value {confidence}.")
         if self.confidence is not None:
             raise ValueError("Cannot note confidence more than once.")
+        if confidence is None:
+            confidence = self.chatbot.confidence()
         self.confidence = confidence
 
     def add_error(self, error: str):
@@ -95,6 +100,9 @@ class SingleProblemEvaluation(Generic[Problem]):
         except FailedToAnswer:
             self.mark_nonanswer()
             raise NoValidAnswer()
+        except Exception:
+            self.mark_nonanswer()
+            self.stack_trace = traceback.format_exc()
 
     def report(self) -> SingleProblemReport[Problem]:
         if self.status == EvaluationResultStatus.INCOMPLETE:
@@ -124,6 +132,7 @@ class SingleProblemEvaluation(Generic[Problem]):
             errors=set(self.errors),
             notes=list(self.notes),
             transcripts=transcripts,
+            stack_trace=self.stack_trace,
         )
 
 
@@ -326,13 +335,17 @@ def run_basic_evaluation(
             pass
         return problem_evaluation.report()
 
-    with ThreadPoolExecutor(max_workers=parallelism) as executor:
-        initial_results = list(
-            executor.map(
-                evaluate_problem,
-                (problem_set.generate(random) for _ in range(n_samples)),
-            )
-        )
+    if parallelism == 1:
+        initial_results = [
+            evaluate_problem(problem_set.generate(random)) for _ in trange(n_samples)
+        ]
+    else:
+        with ThreadPoolExecutor(max_workers=parallelism) as executor:
+            futures = [
+                executor.submit(evaluate_problem, problem_set.generate(random))
+                for _ in trange(n_samples)
+            ]
+            initial_results = [future.result() for future in tqdm(futures)]
 
     other_samples = []
     reduced_exemplar = None

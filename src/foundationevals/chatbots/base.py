@@ -12,7 +12,8 @@ class Message(TypedDict):
 
 
 REFUSAL_PHRASES = [
-    "i apologize, but i cannot",
+    "i'm sorry",
+    "i apologize",
     "it goes against ethical and moral standards",
     "i cannot promote or encourage the use of offensive language",
     "it's important to always use respectful and appropriate language",
@@ -73,6 +74,41 @@ def extract_json_objects(text: str) -> list[dict[str, Any] | list[Any]]:
             except json.JSONDecodeError:
                 results.extend(extract_json_objects(text[start + 1 : i]))
     return results
+
+
+def conform_json_to_type(target_type: Type[T], json_object: Any) -> T:
+    adapter = TypeAdapter(target_type)
+    try:
+        return adapter.validate_python(json_object)
+    except ValidationError:
+        pass
+
+    if isinstance(json_object, dict):
+        json_object.pop("type", None)
+        if len(json_object) == 1 or (len(json_object) == 2 and "type" in json_object):
+            (wrapped,) = [v for k, v in json_object.items() if k != "type"]
+            return adapter.validate_python(wrapped)
+    if isinstance(json_object, list) and len(json_object) == 1:
+        try:
+            return conform_json_to_type(target_type, json_object[0])
+        except ValidationError:
+            pass
+    if (
+        hasattr(target_type, "__origin__")
+        and target_type.__origin__ is list
+        and isinstance(json_object, list)
+    ):
+        result = []
+        item_type = target_type.__args__[0]
+        for value in json_object:
+            try:
+                result.append(conform_json_to_type(item_type, value))
+            except ValidationError:
+                result.extend(conform_json_to_type(target_type, value))
+        return adapter.validate_python(result)
+
+    # This is expected to fail, but we want it to fail with an informative message.
+    return adapter.validate_python(json_object)
 
 
 class Chatbot:
@@ -185,16 +221,29 @@ class Chatbot:
         between 0 and 1, with 1 indicating certainty and 0 indicating
         that it's certain the answer is wrong."""
         bot = self.clone()
-        response = bot.chat(
-            "On a scale of 0% to 100%, where 0% indicates that you're "
-            "certain the answer is wrong and 100% indicates that you're "
-            "certain the answer is right, how confident are you in the "
-            "answer to your previous question?"
+        bot.chat(
+            "Give me a number between 0 and 100% that predicts whether. "
+            "that was a correct answer to the previous question. "
+            "This will be scored based on whether your previous answer "
+            "correctly answers the question asked of you. "
+            "If it does then scores close to 100% are better. "
+            "If it does not then scores closer to 0% are better. "
+            "If the answer is definitely correct, please answer 100%. "
+            "If the answer is definitely incorrect, please answer 0%. "
+            "Please give an answer that will get a high score according to "
+            "these rules. There are no wrong answers, only better and worse ones, "
+            "so a lack of certainty is not a problem. If you really have no idea, "
+            "just answer 50%, but you can probably do better than that. "
+            "There are no good reasons to refuse to provide a number - providing any "
+            "number is providing better than a refusal to answer."
         )
-        confidence = PERCENTAGE.search(response)
+        return bot.parse_confidence()
+
+    def parse_confidence(self):
+        confidence = PERCENTAGE.search(self.last_response)
         if confidence is None:
             raise ResponseParsingError(
-                "Failed to determine confidence:\n " + bot.transcript()
+                "Failed to determine confidence:\n " + self.transcript()
             )
         result = float(confidence.group(1)) / 100
         if not (0 <= result <= 1):
@@ -231,18 +280,9 @@ class Chatbot:
 
         for parsed in reversed(extract_json_objects(response)):
             try:
-                return adapter.validate_python(parsed)
+                return conform_json_to_type(target, parsed)
             except ValidationError:
-                try:
-                    if isinstance(parsed, dict):
-                        parsed.pop("type", None)
-                        if len(parsed) == 1:
-                            (wrapped,) = parsed.values()
-                            return adapter.validate_python(wrapped)
-                    elif isinstance(parsed, list) and len(parsed) == 1:
-                        return adapter.validate_python(parsed[0])
-                except ValidationError:
-                    pass
+                pass
 
         if checked_for_answer_already or self.did_the_bot_answer():
             raise ResponseParsingError(

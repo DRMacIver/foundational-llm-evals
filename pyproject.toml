@@ -46,6 +46,7 @@ shrinkray = {git = "https://github.com/DRMacIver/shrinkray.git"}
 [tool.poetry.group.dev.dependencies]
 ipython = "^8.22.2"
 pytest = "^8.1.1"
+jupyter = {extras = ["notebook"], version = "^1.0.0"}
 
 [tool.flake8]
 max-line-length = 120

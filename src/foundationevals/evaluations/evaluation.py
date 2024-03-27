@@ -33,9 +33,8 @@ class ReportedStatus(Enum):
     NONANSWER = 2
 
 
-class SingleProblemReport(BaseModel, Generic[Problem, Answer]):
+class SingleProblemReport(BaseModel, Generic[Problem]):
     problem: Problem
-    answer: Answer | None
     confidence: float | None
     status: ReportedStatus
     errors: set[str]
@@ -43,25 +42,21 @@ class SingleProblemReport(BaseModel, Generic[Problem, Answer]):
     transcripts: list[list[Message]]
 
 
-class SingleProblemEvaluation(Generic[Problem, Answer]):
-    def __init__(self, chatbot: Chatbot, problem: Problem, answer_type: Type[Answer]):
-        assert answer_type is not None
+class SingleProblemEvaluation(Generic[Problem]):
+    def __init__(self, chatbot: Chatbot, problem: Problem):
         self.chatbot = chatbot
         self.problem: Problem = problem
         self.status: EvaluationResultStatus = EvaluationResultStatus.INCOMPLETE
         self.errors: set[str] = set()
         self.notes: list[str] = []
-        self.answer: Answer | None = None
-        self.answer_type: Type[Answer] = answer_type
         self.confidence: float | None = None
 
     def mark_nonanswer(self):
         self.__check_incomplete()
         self.status = EvaluationResultStatus.NONANSWER
 
-    def mark_answer(self, answer: Answer):
+    def mark_answered(self):
         self.__check_incomplete()
-        self.answer = answer
         self.status = EvaluationResultStatus.ANSWER
 
     def record_confidence(self, confidence: float):
@@ -81,7 +76,7 @@ class SingleProblemEvaluation(Generic[Problem, Answer]):
         if self.status != EvaluationResultStatus.INCOMPLETE:
             raise ValueError("Cannot change the status of a completed scorecard.")
 
-    def parse(self) -> Answer:
+    def parse(self, answer_type: Type[Answer]) -> Answer:
         """Attempts to parse the chatbot's last response into a structured answer
         of the right type, setting all of the main scorecard attributes.
 
@@ -91,16 +86,17 @@ class SingleProblemEvaluation(Generic[Problem, Answer]):
         """
         self.__check_incomplete()
         try:
-            result = self.chatbot.structure(self.answer_type)
-            self.mark_answer(result)
+            result = self.chatbot.structure(answer_type)
+            self.mark_answered()
             self.record_confidence(self.chatbot.confidence())
             self.chatbot.freeze()
+            self.add_note(f"Parsed answer of type {answer_type} as {result}")
             return result
         except FailedToAnswer:
             self.mark_nonanswer()
             raise NoValidAnswer()
 
-    def report(self) -> SingleProblemReport[Problem, Answer]:
+    def report(self) -> SingleProblemReport[Problem]:
         if self.status == EvaluationResultStatus.INCOMPLETE:
             raise ValueError("Cannot report an incomplete scorecard.")
 
@@ -123,7 +119,6 @@ class SingleProblemEvaluation(Generic[Problem, Answer]):
 
         return SingleProblemReport(
             problem=self.problem,
-            answer=self.answer,
             confidence=self.confidence,
             status=status,
             errors=set(self.errors),
@@ -229,14 +224,14 @@ def cached_property(fn):
     return wrapper
 
 
-class FullReport(BaseModel, Generic[Problem, Answer]):
+class FullReport(BaseModel, Generic[Problem]):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     model: str
 
-    initial_random_sample: list[SingleProblemReport[Problem, Answer]]
-    other_samples: list[SingleProblemReport[Problem, Answer]]
-    reduced_exemplar: SingleProblemReport[Problem, Answer] | None
+    initial_random_sample: list[SingleProblemReport[Problem]]
+    other_samples: list[SingleProblemReport[Problem]]
+    reduced_exemplar: SingleProblemReport[Problem] | None
 
     @property
     def sample_size(self):
@@ -308,39 +303,22 @@ class FullReport(BaseModel, Generic[Problem, Answer]):
 
 def run_basic_evaluation(
     problem_set: ProblemSet[Problem],
-    evaluation: Callable[[SingleProblemEvaluation[Problem, Answer]], None],
+    evaluation: Callable[[SingleProblemEvaluation[Problem]], None],
     *,
     chatbot: Chatbot,
     random: Random | None = None,
     n_samples=1000,
     parallelism=1,
     reduce=False,
-    answer_type=None,
-) -> FullReport[Problem, Answer]:
+) -> FullReport[Problem]:
     chatbot.freeze()
     if random is None:
         random = Random()
 
-    if answer_type is None:
-        annotations = dict(evaluation.__annotations__)
-        annotations.pop("return", None)
-        if len(annotations) == 1:
-            (evaluation_arg,) = annotations.values()
-            answer_type = evaluation_arg.__args__[1]
-
-    if answer_type is None:
-        raise ValueError(
-            "Cannot infer answer type from evaluation function. "
-            "Please add a return annotation to the function or pass "
-            "answer_type explicitly."
-        )
-
-    def evaluate_problem(problem: Problem) -> SingleProblemReport[Problem, Answer]:
-        assert answer_type is not None
+    def evaluate_problem(problem: Problem) -> SingleProblemReport[Problem]:
         problem_evaluation = SingleProblemEvaluation(
             chatbot=chatbot.clone(),
             problem=problem,
-            answer_type=answer_type,
         )
         try:
             evaluation(problem_evaluation)

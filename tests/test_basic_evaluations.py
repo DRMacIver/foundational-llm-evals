@@ -12,10 +12,9 @@ class SmallIntegerProblemSet(ProblemSet[int]):
         return random.randint(1, 100)
 
 
-def is_this_big(evaluation: SingleProblemEvaluation[int, bool]) -> None:
-    assert evaluation.answer_type == bool
+def is_this_big(evaluation: SingleProblemEvaluation[int]) -> None:
     evaluation.chatbot.chat(f"Is {evaluation.problem} bigger than 10?")
-    answer = evaluation.parse()
+    answer = evaluation.parse(bool)
     assert isinstance(answer, bool)
     correct_answer = evaluation.problem > 10
 
@@ -42,9 +41,9 @@ def test_bigness_evaluation():
     assert 0 < report.confidence_calibration <= 1
 
 
-def always_fails(evaluation: SingleProblemEvaluation[int, bool]) -> None:
+def always_fails(evaluation: SingleProblemEvaluation[int]) -> None:
     evaluation.chatbot.chat(f"Is {evaluation.problem} bigger than 10?", response="Yes")
-    evaluation.mark_answer(True)
+    evaluation.mark_answered()
     evaluation.record_confidence(1.0)
     evaluation.add_error("This evaluation should always fail.")
 
@@ -62,3 +61,26 @@ def test_always_failing_example():
 
     assert report.reduced_exemplar is not None
     assert report.reduced_exemplar.problem == 0
+
+
+def always_succeeds(evaluation: SingleProblemEvaluation[int]) -> None:
+    evaluation.chatbot.chat(
+        f"Is {evaluation.problem} bigger than 10?",
+        response="Yes" if evaluation.problem > 10 else "No",
+    )
+    evaluation.mark_answered()
+    evaluation.record_confidence(1.0)
+
+
+def test_always_succeeding_example():
+    report = run_basic_evaluation(
+        SmallIntegerProblemSet(),
+        always_succeeds,
+        chatbot=Chatbot("dummy"),
+        n_samples=10,
+        reduce=True,
+    )
+    assert report.correct_answer_rate == 1
+    assert report.answer_rate == 1
+
+    assert report.reduced_exemplar is None

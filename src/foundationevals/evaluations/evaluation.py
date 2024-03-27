@@ -92,8 +92,8 @@ class SingleProblemEvaluation(Generic[Problem]):
         self.__check_incomplete()
         try:
             result = self.chatbot.structure(answer_type)
-            self.mark_answered()
             self.record_confidence(self.chatbot.confidence())
+            self.mark_answered()
             self.chatbot.freeze()
             self.add_note(f"Parsed answer of type {answer_type} as {result}")
             return result

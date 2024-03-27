@@ -218,7 +218,9 @@ class Chatbot:
 
         adapter = TypeAdapter(target)
 
+        checked_for_answer_already = False
         if any(refusal in self.last_response.lower() for refusal in REFUSAL_PHRASES):
+            checked_for_answer_already = True
             if not self.did_the_bot_answer():
                 raise FailedToAnswer(
                     "Chatbot failed to provide an answer to the question."
@@ -242,7 +244,7 @@ class Chatbot:
                 except ValidationError:
                     pass
 
-        if self.did_the_bot_answer():
+        if checked_for_answer_already or self.did_the_bot_answer():
             raise ResponseParsingError(
                 f"Something went wrong in interacting with chatbot:\n\n{structuring_bot.transcript()}"
             )

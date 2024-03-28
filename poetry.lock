@@ -996,6 +996,21 @@ redis = ["redis (>=3.0.0)"]
 zoneinfo = ["backports.zoneinfo (>=0.2.1)", "tzdata (>=2024.1)"]
 
 [[package]]
+name = "hypothesis-trio"
+version = "0.6.0"
+description = "Hypothesis plugin for trio"
+optional = false
+python-versions = ">=3.6"
+files = [
+    {file = "hypothesis-trio-0.6.0.tar.gz", hash = "sha256:d7ab108ac99758011b20f2448f1b1269375c68c1ffda9e4468600a4975ff955c"},
+    {file = "hypothesis_trio-0.6.0-py3-none-any.whl", hash = "sha256:3ac261dc6fcf3862d7d57ffa52d294539f8d807ac9483d58a8060df3c9e856fc"},
+]
+
+[package.dependencies]
+hypothesis = ">=6.7.0"
+trio = ">=0.11"
+
+[[package]]
 name = "idna"
 version = "3.6"
 description = "Internationalized Domain Names in Applications (IDNA)"
@@ -3588,4 +3603,4 @@ test = ["pytest"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.12, <4.0"
-content-hash = "46d922010216cd10625540a6e7975ce81503db19a0e40933c547f21f573ac4db"
+content-hash = "0fc728967282f6f66e2a51ea809fde62ccef62c1bdcd4702247c93845f82aab5"

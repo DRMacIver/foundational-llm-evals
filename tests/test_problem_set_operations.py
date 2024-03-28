@@ -1,4 +1,5 @@
 import pytest
+from foundationevals.evaluations.arithmetic import PairOfPositiveIntegers
 from foundationevals.evaluations.wordgen import WordConstraintsProblemSet
 from hypothesis import given, strategies as st, settings, HealthCheck
 from hypothesis.errors import Frozen, StopTest
@@ -7,8 +8,15 @@ problem_sets = pytest.mark.parametrize(
     "problem_set_cls",
     [
         WordConstraintsProblemSet,
+        PairOfPositiveIntegers,
     ],
 )
+
+
+@problem_sets
+def test_has_problem_type(problem_set_cls):
+    problem_set = problem_set_cls()
+    assert problem_set.problem_type is not None
 
 
 @problem_sets

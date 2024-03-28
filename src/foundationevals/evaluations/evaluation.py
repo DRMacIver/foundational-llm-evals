@@ -149,6 +149,8 @@ class ProblemSet(ABC, Generic[Problem]):
     def problem_type(self) -> Type[Problem]:
         if self.__problem_type is None:
             for cls in self.__class__.mro():
+                if self.__problem_type is not None:
+                    break
                 if hasattr(cls, "__orig_bases__"):
                     for base in cls.__orig_bases__:
                         if (
@@ -156,9 +158,8 @@ class ProblemSet(ABC, Generic[Problem]):
                             and base.__origin__ == ProblemSet
                         ):
                             problem_type = base.__args__[0]
-                            if isinstance(problem_type, type):
-                                self.__problem_type = problem_type
-                                break
+                            self.__problem_type = problem_type
+                            break
             if self.__problem_type is None:
                 raise ValueError(
                     "Could not determine problem type. Please set it explicitly."

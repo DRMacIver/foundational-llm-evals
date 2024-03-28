@@ -3,7 +3,12 @@ from abc import ABC, abstractmethod
 from random import Random
 from humanize import ordinal
 from pydantic import BaseModel, field_validator, ValidationError
-from foundationevals.evaluations.evaluation import ProblemSet, SingleProblemEvaluation
+from foundationevals.evaluations.evaluation import (
+    BadData,
+    ProblemSet,
+    SingleProblemEvaluation,
+)
+import json
 
 
 class Rule(ABC, BaseModel):
@@ -25,7 +30,7 @@ class Character(Rule):
 
     def matches(self, word: str) -> bool:
         try:
-            return word[self.position] == self.character
+            return word[self.position].lower() == self.character.lower()
         except IndexError:
             return False
 
@@ -43,7 +48,7 @@ class WordConstraints(BaseModel):
         for i, rule in enumerate(rules):
             words = [word for word in words if rule.matches(word)]
             if not words:
-                raise ValidationError(
+                raise ValueError(
                     f"No words match all of {', '.join(map(repr, rules[:i+1]))}"
                 )
         return rules
@@ -76,6 +81,36 @@ class WordConstraintsProblemSet(ProblemSet[WordConstraints]):
         n = random.randint(1, len(rules))
         return WordConstraints(rules=rules[:n])
 
+    def load(self, data: bytes) -> WordConstraints:
+        try:
+            parsed = json.loads(data)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise BadData()
+
+        if not isinstance(parsed, dict) or list(parsed) != ["rules"]:
+            raise BadData(parsed)
+
+        if not isinstance(parsed["rules"], list):
+            raise BadData(parsed)
+
+        rules = []
+        try:
+            for rule in parsed["rules"]:
+                if not isinstance(rule, dict):
+                    raise BadData(parsed)
+                if "min_length" in rule:
+                    rules.append(Length(**rule))
+                else:
+                    rules.append(Character(**rule))
+            return WordConstraints(rules=rules)
+        except ValidationError:
+            raise BadData()
+
+    def dump(self, problem: WordConstraints) -> bytes:
+        return json.dumps({"rules": [r.model_dump() for r in problem.rules]}).encode(
+            "utf-8"
+        )
+
 
 def words_matching_rules(rules):
     words = word_list("sowpods")
@@ -87,6 +122,7 @@ def words_matching_rules(rules):
 def evaluate_ability_to_generate_words(
     evaluation: SingleProblemEvaluation[WordConstraints],
 ) -> None:
+    sowpods = word_list("sowpods")
     rules = evaluation.problem.rules
     prompt_parts = [
         f"Please give me a list of words satisfying the following condition{'s' if len(rules) > 1 else ''}:\n"
@@ -116,7 +152,7 @@ def evaluate_ability_to_generate_words(
                     f"The {pos} character from the end should be {rule.character}."
                 )
             else:
-                pos = ordinal(rule.position)
+                pos = ordinal(rule.position + 1)
                 prompt_parts.append(f"The {pos} character should be {rule.character}.")
 
     prompt = "\n".join(prompt_parts)
@@ -128,8 +164,10 @@ def evaluate_ability_to_generate_words(
         evaluation.add_error("No words were given.")
         return
 
-    for rule in evaluation.problem.rules:
-        for word in results:
+    for word in results:
+        if word.upper() not in sowpods:
+            evaluation.add_note(f"{word} is not in the SOWPODS word list.")
+        for rule in evaluation.problem.rules:
             if not rule.matches(word):
                 evaluation.add_note(f"Word {word} does not match the rule {rule}")
                 if isinstance(rule, Character):

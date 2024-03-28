@@ -136,6 +136,10 @@ class SingleProblemEvaluation(Generic[Problem]):
         )
 
 
+class BadData(Exception):
+    pass
+
+
 class ProblemSet(ABC, Generic[Problem]):
     def __init__(self, problem_type: Type[Problem] | None = None):
         self.__problem_type = problem_type
@@ -172,7 +176,10 @@ class ProblemSet(ABC, Generic[Problem]):
         return self.type_adapter.dump_json(problem)
 
     def load(self, data: bytes) -> Problem:
-        return self.type_adapter.validate_json(data)
+        try:
+            return self.type_adapter.validate_json(data)
+        except ValidationError:
+            raise BadData()
 
     def reduction_key(self, problem: Problem) -> Any:
         data = self.dump(problem)
@@ -191,16 +198,21 @@ class ProblemSet(ABC, Generic[Problem]):
         problem: Problem,
         is_interesting: Callable[[Problem], bool],
         parallelism: int = 1,
+        random=None,
     ) -> Problem:
         async def is_interesting_async(data: bytes) -> bool:
             try:
                 parsed = self.load(data)
-            except ValidationError:
+            except BadData:
+                await trio.lowlevel.checkpoint()
                 return False
+            if parallelism <= 1:
+                await trio.lowlevel.checkpoint()
+                return is_interesting(parsed)
             return await trio.to_thread.run_sync(is_interesting, parsed)
 
         work = WorkContext(
-            random=Random(0),
+            random=random or Random(0),
             volume=Volume.quiet,
             parallelism=parallelism,
         )

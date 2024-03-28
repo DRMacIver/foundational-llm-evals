@@ -5,6 +5,8 @@ from foundationevals.evaluations.evaluation import (
 )
 from random import Random
 from foundationevals.chatbots import Chatbot
+from foundationevals.evaluations.wordgen import WordConstraintsProblemSet
+import pytest
 
 
 class SmallIntegerProblemSet(ProblemSet[int]):
@@ -42,15 +44,24 @@ def test_bigness_evaluation():
 
 
 def always_fails(evaluation: SingleProblemEvaluation[int]) -> None:
-    evaluation.chatbot.chat(f"Is {evaluation.problem} bigger than 10?", response="Yes")
     evaluation.mark_answered()
     evaluation.record_confidence(1.0)
     evaluation.add_error("This evaluation should always fail.")
 
 
-def test_always_failing_example():
+evaluations = pytest.mark.parametrize(
+    "evaluation",
+    [
+        SmallIntegerProblemSet,
+        WordConstraintsProblemSet,
+    ],
+)
+
+
+@evaluations
+def test_always_failing_example(evaluation):
     report = run_basic_evaluation(
-        SmallIntegerProblemSet(),
+        evaluation(),
         always_fails,
         chatbot=Chatbot("dummy"),
         n_samples=10,
@@ -64,17 +75,14 @@ def test_always_failing_example():
 
 
 def always_succeeds(evaluation: SingleProblemEvaluation[int]) -> None:
-    evaluation.chatbot.chat(
-        f"Is {evaluation.problem} bigger than 10?",
-        response="Yes" if evaluation.problem > 10 else "No",
-    )
     evaluation.mark_answered()
     evaluation.record_confidence(1.0)
 
 
-def test_always_succeeding_example():
+@evaluations
+def test_always_succeeding_example(evaluation):
     report = run_basic_evaluation(
-        SmallIntegerProblemSet(),
+        evaluation(),
         always_succeeds,
         chatbot=Chatbot("dummy"),
         n_samples=10,

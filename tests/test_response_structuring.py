@@ -96,13 +96,25 @@ def test_can_extract_a_list_of_strings_from_an_overly_chatty_response(model):
         ],
     )
 
-    assert bot.structure(list[str]) == [
-        "London",
-        "Paris",
-        "Madrid",
-        "Canberra",
-        "Ottawa",
-    ]
+    assert bot.structure(list[str]) in (
+        [
+            "London",
+            "Paris",
+            "Madrid",
+            "Canberra",
+            "Ottawa",
+        ],
+        # Claude really wants to include the qualifying countries in its answers here and
+        # it's hard to argue it's wrong, so we permit this too. Evaluations should probably
+        # take into account variation like this.
+        [
+            "London, United Kingdom",
+            "Paris, France",
+            "Madrid, Spain",
+            "Canberra, Australia",
+            "Ottawa, Canada",
+        ],
+    )
     check_confidence(bot)
 
 

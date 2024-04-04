@@ -28,11 +28,16 @@ REFUSAL_PHRASES = [
 PERCENTAGE = re.compile(r"([0-9]+(?:\.[0-9]*)?)%")
 
 STRUCTURING_PROMPT = """
-Please provide a structured representation of your previous
-answer as a JSON value matching the following schema: {SCHEMA}.
+Please provide a structured representation of your previous answer as a JSON value matching the following schema: {SCHEMA}. That is, your answer should look something like `{EXAMPLE}`
 
-Don't wrap it in any unnecessary objects. If it's a list, just
-return a list. If it's a number, just return a number, etc.
+Important instructions:
+- Don't attempt to correct or modify your previous answer. Even if you now realize it was incorrect or incomplete, provide a structured representation of the original answer.
+- Carefully read the question and consider the specific information it is asking for.
+- Include only the direct answer to the question, without any additional explanations, qualifications, or extraneous text.
+- Don't wrap the answer in any unnecessary JSON objects. If the expected output is a list, provide only the list. If it's a single value, provide only that value.
+- Each string element should be concise and not include any detailed explanations.
+- If your previous answer repeats any part of the question, do not include that in your structured answer. e.g. if your answer to "What is the first month of the year?" is "The first month of the year is January", only "January" should appear in the structured answer.
+
 """.replace(
     "\n", " "
 ).strip()
@@ -109,6 +114,19 @@ def conform_json_to_type(target_type: Type[T], json_object: Any) -> T:
 
     # This is expected to fail, but we want it to fail with an informative message.
     return adapter.validate_python(json_object)
+
+
+def example_of_type(t: Type[T]) -> Any:
+    if t == bool:
+        return True
+    elif t == str:
+        return "hello"
+    elif t == int:
+        return 42
+    elif hasattr(t, "__origin__") and t.__origin__ == list:
+        return [example_of_type(t.__args__[0])]
+    else:
+        assert False, f"Don't know how to produce an example of type {t}"
 
 
 class Chatbot:
@@ -275,7 +293,10 @@ class Chatbot:
                     "Chatbot failed to provide an answer to the question."
                 )
         response = structuring_bot.chat(
-            STRUCTURING_PROMPT.format(SCHEMA=json.dumps(adapter.json_schema()))
+            STRUCTURING_PROMPT.format(
+                SCHEMA=json.dumps(adapter.json_schema()),
+                EXAMPLE=json.dumps(example_of_type(target)),
+            ),
         )
 
         for parsed in reversed(extract_json_objects(response)):

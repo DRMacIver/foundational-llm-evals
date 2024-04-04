@@ -15,7 +15,7 @@ def pytest_generate_tests(metafunc):
                 ]
             )
         if config.getoption("--run-tests-on-gpt"):
-            models.extend(["gpt-3.5-turbo" "gpt-4-turbo-preview"])
+            models.extend(["gpt-3.5-turbo", "gpt-4-turbo-preview"])
         metafunc.parametrize("model", models)
 
 

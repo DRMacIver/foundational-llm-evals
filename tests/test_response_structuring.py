@@ -302,11 +302,19 @@ def test_can_conform_badly_formed_json():
         messages=[
             {
                 "role": "user",
-                "content": "Please give me a list of words satisfying the following conditions:\n\nIt should have between 7 and 11 characters.\nThe 1st character should be A.\nThe 9th character should be S.\nIt should start with the character W.\nThe 8th character should be I.\nThe 3rd character should be E.",
+                "content": "Please give me a list of words satisfying the following conditions:\n\nIt should have between 7 and 11 characters.\nThe 2nd character should be A.\nThe 9th character should be S.\nIt should start with the character W.\nThe 8th character should be I.\nThe 3rd character should be E.",
             },
             {
                 "role": "assistant",
-                "content": "Based on the given conditions, here are some words that might fit:\n\n1. Weasel (7 characters)\n2. Weighty (9 characters) - The 3rd character is E and the 8th character is I, but the 9th character is Y instead of S.\n3. Weaknesses (10 characters)\n4. Awesomeness (10 characters)\n5. Awe-struck (9 characters) - The 1st character is A and the 8th character is I, but the 9th character is E instead of S.\n6. Weaseling (9 characters)\n7. Awe-inspiring (12 characters) - This word has more than 11 characters, but it fits all other conditions.\n\nPlease note that some of these words might not be commonly used or grammatically correct in certain contexts. It's always a good idea to double-check the spelling and meaning of any word before using it in a formal setting.",
+                "content": "Based on the given conditions, here are some words that might fit:\n\n"
+                "1. Weasel (7 characters)\n"
+                "2. Weighty (9 characters) - The 3rd character is E and the 8th character is I, but the 9th character is Y instead of S.\n"
+                "3. Weaknesses (10 characters)\n"
+                "4. Awesomeness (10 characters)\n"
+                "5. Awe-struck (9 characters) - The 1st character is A and the 8th character is I, but the 9th character is E instead of S.\n"
+                "6. Weaseling (9 characters)\n"
+                "7. Awe-inspiring (12 characters) - This word has more than 11 characters, but it fits all other conditions."
+                "\n\nPlease note that some of these words might not be commonly used or grammatically correct in certain contexts. It's always a good idea to double-check the spelling and meaning of any word before using it in a formal setting.",
             },
         ],
     )

@@ -3,6 +3,7 @@ from pydantic import TypeAdapter, ValidationError
 import json
 import re
 
+
 T = TypeVar("T")
 
 
@@ -28,19 +29,30 @@ REFUSAL_PHRASES = [
 PERCENTAGE = re.compile(r"([0-9]+(?:\.[0-9]*)?)%")
 
 STRUCTURING_PROMPT = """
-Please provide a structured representation of your previous answer as a JSON value matching the following schema: {SCHEMA}. That is, your answer should look something like `{EXAMPLE}`
+Please provide a structured representation of your previous answer as a JSON value matching the following schema: {SCHEMA}.
 
 Important instructions:
-- Don't attempt to correct or modify your previous answer. Even if you now realize it was incorrect or incomplete, provide a structured representation of the original answer.
+- Your answer is some value matching the schema, not the schema itself.
 - Carefully read the question and consider the specific information it is asking for.
 - Include only the direct answer to the question, without any additional explanations, qualifications, or extraneous text.
 - Don't wrap the answer in any unnecessary JSON objects. If the expected output is a list, provide only the list. If it's a single value, provide only that value.
 - Each string element should be concise and not include any detailed explanations.
 - If your previous answer repeats any part of the question, do not include that in your structured answer. e.g. if your answer to "What is the first month of the year?" is "The first month of the year is January", only "January" should appear in the structured answer.
+- Make sure not to miss out any parts from your answer, even if it doesn't look like a correct answer to the question. e.g. if your answer contains a list, be sure to include every element, even if some of the elements look wrong.
+- Don't attempt to correct or modify your previous answer. Even if you now realize it was incorrect or incomplete, provide a structured representation of the original answer.
 
-""".replace(
-    "\n", " "
-).strip()
+""".strip()
+
+LISTING_PROMPT = """
+Please provide a markdown style numbered list that contains just your previous answers.
+
+Important instructions:
+* Read the question carefully, determine what an answer to it looks like, and only include those answers in your list. For example, if I asked for a list of numbers, each list item should contain only a number and no additional text.
+* List items should not contain any bracketed asides about the answer unless they are directly a part of the requested answer.
+* Omit all clarifying text, context, caveats, notes or explanations.
+* Do not include any explanations of why those answers are the right ones.
+* Do not in any way modify your previous answer, even if you now realise it's incorrect.
+""".strip()
 
 
 class FailedToAnswer(Exception):
@@ -116,17 +128,9 @@ def conform_json_to_type(target_type: Type[T], json_object: Any) -> T:
     return adapter.validate_python(json_object)
 
 
-def example_of_type(t: Type[T]) -> Any:
-    if t == bool:
-        return True
-    elif t == str:
-        return "hello"
-    elif t == int:
-        return 42
-    elif hasattr(t, "__origin__") and t.__origin__ == list:
-        return [example_of_type(t.__args__[0])]
-    else:
-        assert False, f"Don't know how to produce an example of type {t}"
+YES_NO_ANSWER = re.compile(r"^(yes|no)\b", re.IGNORECASE)
+
+NUMERIC_LIST = re.compile(r"^[0-9]+\. (.+)$")
 
 
 class Chatbot:
@@ -224,15 +228,57 @@ class Chatbot:
         refusal_checking_bot = self.clone()
 
         check_for_refusal = refusal_checking_bot.chat(
-            "Does your answer contain the information I requested? Don't apologise or explain, please just say 'yes' or 'no'"
-        ).lower()
+            "Did your response contain the information I requested, "
+            "or was there a reason you could not or did not answer it "
+            "as asked? Don't apologies, don't correct your answer. "
+            "Just tell me if you provided the requested information."
+        )
 
-        if check_for_refusal.startswith("yes"):
-            return True
-        elif check_for_refusal.startswith("no"):
-            return False
+        match = YES_NO_ANSWER.match(check_for_refusal)
+
+        if match is None:
+            # If the bot didn't say yes or no and has started behaving
+            # in a weaselly LLM nonsense way we assume this was a refusal
+            # and the dumb check is more likely to be useful than its
+            # follow up where it tries to hallucinate its way into
+            # deciding that it's a good Bing after all.
+            lower_check = check_for_refusal.lower()
+            for phrase in REFUSAL_PHRASES:
+                if phrase in lower_check:
+                    return False
+
+            check_for_refusal = refusal_checking_bot.chat(
+                'Please just say "yes" if it provided the requested information or "no" if it did not. Don\'t apologise or explain.'
+            )
+            match = YES_NO_ANSWER.match(check_for_refusal)
+
+        if match is None:
+            raise ResponseParsingError(
+                "Could not determine whether chatbot answered the question:\n\n"
+                + refusal_checking_bot.transcript()
+            )
+
+        answer = match.group(0).lower()
+        assert answer in ("yes", "no")
+        if answer == "yes":
+            # ok but did it really?
+            refusal_checking_bot.chat(
+                "Please point to the exact words in your response that answered my question."
+            )
+            confirmation = refusal_checking_bot.chat(
+                "Given this, do you still think your response contained the information I requested?"
+            )
+            match = YES_NO_ANSWER.match(confirmation)
+            if match is None:
+                raise ResponseParsingError(
+                    "Could not determine whether chatbot answered the question:\n\n"
+                    + refusal_checking_bot.transcript()
+                )
+            answer = match.group(0).lower()
+            assert answer in ("yes", "no")
+            return answer == "yes"
         else:
-            return "yes" in check_for_refusal
+            return False
 
     def confidence(self) -> float:
         """Return the confidence of the last response, as a float
@@ -280,11 +326,6 @@ class Chatbot:
         # When adding a new evaluation or testing a new model you are *extremely
         # strongly encouraged* to add new tests to test_response_structuring.py
         # to make sure that it correctly structures the responses you are seeing.
-
-        structuring_bot = self.clone()
-
-        adapter = TypeAdapter(target)
-
         checked_for_answer_already = False
         if any(refusal in self.last_response.lower() for refusal in REFUSAL_PHRASES):
             checked_for_answer_already = True
@@ -292,18 +333,58 @@ class Chatbot:
                 raise FailedToAnswer(
                     "Chatbot failed to provide an answer to the question."
                 )
+
+        if target == bool:
+            match = YES_NO_ANSWER.match(self.last_response)
+
+            if match is not None:
+                answer = match.group(0).lower()
+
+                if answer == "yes":
+                    return True  # type: ignore
+                else:
+                    assert answer == "no"
+                    return False  # type: ignore
+
+        if target == list[str]:
+            response = self.clone().chat(LISTING_PROMPT)
+
+            result = []
+
+            for line in response.splitlines():
+                match = NUMERIC_LIST.match(line)
+                if match is not None:
+                    result.append(match.group(1))
+
+            if result:
+                return result  # type: ignore
+
+        structuring_bot = self.clone()
+
+        adapter = TypeAdapter(target)
+
         response = structuring_bot.chat(
             STRUCTURING_PROMPT.format(
                 SCHEMA=json.dumps(adapter.json_schema()),
-                EXAMPLE=json.dumps(example_of_type(target)),
             ),
         )
 
+        validation_error = False
         for parsed in reversed(extract_json_objects(response)):
             try:
                 return conform_json_to_type(target, parsed)
             except ValidationError:
-                pass
+                validation_error = True
+
+        if validation_error:
+            response = structuring_bot.chat(
+                f"That didn't match the schema {json.dumps(adapter.json_schema())}. Please try again."
+            )
+            for parsed in reversed(extract_json_objects(response)):
+                try:
+                    return conform_json_to_type(target, parsed)
+                except ValidationError:
+                    pass
 
         if checked_for_answer_already or self.did_the_bot_answer():
             raise ResponseParsingError(

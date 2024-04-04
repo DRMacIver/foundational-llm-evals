@@ -7,7 +7,7 @@ class GPT(Chatbot):
 
         return OpenAI()
 
-    def complete(self) -> Message:
+    def complete(self) -> str:
         completion = (
             self.client.chat.completions.create(
                 messages=self.messages,
@@ -18,7 +18,4 @@ class GPT(Chatbot):
             .message
         )
 
-        return {
-            "role": "assistant",
-            "content": completion.content or "",
-        }
+        return completion.content or ""

@@ -101,10 +101,12 @@ def conform_json_to_type(target_type: Type[T], json_object: Any) -> T:
         pass
 
     if isinstance(json_object, dict):
-        json_object.pop("type", None)
-        if len(json_object) == 1 or (len(json_object) == 2 and "type" in json_object):
+        if len(json_object) == 1:
+            (wrapped,) = json_object.values()
+            return conform_json_to_type(target_type, wrapped)
+        elif len(json_object) == 2 and "type" in json_object:
             (wrapped,) = [v for k, v in json_object.items() if k != "type"]
-            return adapter.validate_python(wrapped)
+            return conform_json_to_type(target_type, wrapped)
     if isinstance(json_object, list) and len(json_object) == 1:
         try:
             return conform_json_to_type(target_type, json_object[0])
@@ -131,6 +133,13 @@ def conform_json_to_type(target_type: Type[T], json_object: Any) -> T:
 YES_NO_ANSWER = re.compile(r"^(yes|no)\b", re.IGNORECASE)
 
 NUMERIC_LIST = re.compile(r"^[0-9]+\. (.+)$")
+
+
+def messages_to_transcript(messages):
+    parts = []
+    for message in messages:
+        parts.append(f"{message['role']}: {message['content']}\n")
+    return "\n".join(parts)
 
 
 class Chatbot:
@@ -210,10 +219,7 @@ class Chatbot:
         return self.__client
 
     def transcript(self) -> str:
-        parts = []
-        for message in self.messages:
-            parts.append(f"{message['role']}: {message['content']}\n")
-        return "\n".join(parts)
+        return messages_to_transcript(self.messages)
 
     @property
     def last_response(self):

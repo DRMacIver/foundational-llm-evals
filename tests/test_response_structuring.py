@@ -1,5 +1,5 @@
 from foundationevals.chatbots import Chatbot
-from foundationevals.chatbots.base import FailedToAnswer
+from foundationevals.chatbots.base import FailedToAnswer, conform_json_to_type
 import pytest
 
 
@@ -329,3 +329,7 @@ def test_can_conform_badly_formed_json():
         "Awe-inspiring",
     ]
     check_confidence(bot)
+
+
+def test_can_extract_data_stupidly_put_in_type_field():
+    assert conform_json_to_type(str, {"type": "hello"}) == "hello"

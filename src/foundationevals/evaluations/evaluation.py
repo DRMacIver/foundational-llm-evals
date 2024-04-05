@@ -103,6 +103,7 @@ class SingleProblemEvaluation(Generic[Problem]):
         except Exception:
             self.mark_nonanswer()
             self.stack_trace = traceback.format_exc()
+            raise NoValidAnswer()
 
     def report(self) -> SingleProblemReport[Problem]:
         if self.status == EvaluationResultStatus.INCOMPLETE:
@@ -330,6 +331,7 @@ def run_basic_evaluation(
     chatbot: Chatbot,
     random: Random | None = None,
     n_samples=1000,
+    stop_on_first_failure=False,
     parallelism=1,
     reduce=False,
 ) -> FullReport[Problem]:
@@ -348,10 +350,23 @@ def run_basic_evaluation(
             pass
         return problem_evaluation.report()
 
+    if stop_on_first_failure:
+        # TODO: Parallel find first
+        parallelism = 1
+
     if parallelism == 1:
-        initial_results = [
-            evaluate_problem(problem_set.generate(random)) for _ in trange(n_samples)
-        ]
+        if stop_on_first_failure:
+            initial_results = []
+            for _ in trange(n_samples):
+                one_eval = evaluate_problem(problem_set.generate(random))
+                initial_results.append(one_eval)
+                if one_eval.status == ReportedStatus.INCORRECT:
+                    break
+        else:
+            initial_results = [
+                evaluate_problem(problem_set.generate(random))
+                for _ in trange(n_samples)
+            ]
     else:
         with ThreadPoolExecutor(max_workers=parallelism) as executor:
             futures = [

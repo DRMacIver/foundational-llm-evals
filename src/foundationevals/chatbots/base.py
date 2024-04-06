@@ -2,13 +2,21 @@ from typing import TypedDict, Literal, Any, Type, TypeVar
 from pydantic import TypeAdapter, ValidationError
 import json
 import re
+import os
+from contextlib import contextmanager
+import sqlite3
+from typing import Iterator, Callable
+from functools import lru_cache
+from pydantic import BaseModel
+from threading import RLock
 
 
 T = TypeVar("T")
+Role = Literal["user", "assistant", "system"]
 
 
 class Message(TypedDict):
-    role: Literal["user", "assistant", "system"]
+    role: Role
     content: str
 
 
@@ -143,30 +151,35 @@ def messages_to_transcript(messages):
 
 
 class Chatbot:
-    def __new__(cls, model, **kwargs):
-        kwargs["model"] = model
+    @classmethod
+    def subclass_for_model(cls, model):
         if model == "dummy":
-            subclass = DummyChatbot
+            return DummyChatbot
         elif model.startswith("claude"):
             from foundationevals.chatbots.claude import Claude
 
-            subclass = Claude
+            return Claude
         elif model.startswith("gpt"):
             from foundationevals.chatbots.gpt import GPT
 
-            subclass = GPT
+            return GPT
         else:
             from foundationevals.chatbots.ollama import Ollama
 
-            subclass = Ollama
+            return Ollama
 
-        result = super().__new__(subclass)  # type: ignore
+    def __new__(cls, model, **kwargs):
+        kwargs["model"] = model
+        subclass = cls.subclass_for_model(model)
+        result = object.__new__(subclass)  # type: ignore
         result.__init__(**kwargs)
         return result
 
     def __init__(
         self,
         model: str,
+        cache: "ChatCache | str | None" = None,
+        index: int | None = None,
         temperature: float = 0.0,
         max_tokens: int = 1024,
         messages: list[Message] | None = None,
@@ -175,6 +188,13 @@ class Chatbot:
         self.messages: list[Message] = [] if messages is None else list(messages)
         self.temperature: float = temperature
         self.max_tokens = max_tokens
+        if cache is None:
+            cache = ChatCache.default_cache()
+        elif isinstance(cache, str):
+            cache = ChatCache(cache)
+        assert isinstance(cache, ChatCache)
+        self.cache = cache
+        self.index = index
         self.__client = None
         self.children = []
         self.__frozen = False
@@ -199,7 +219,20 @@ class Chatbot:
                 "content": message,
             }
         )
-        result = self.complete() if response is None else response
+        if response is not None:
+            result = response
+        elif self.index is not None:
+            result_id = self.cache.completion(
+                self.cache.messages_to_transcript_id(self.messages),
+                self.model,
+                self.index,
+                self.complete,
+            )
+            saved_message = self.cache.get_message(result_id)
+            assert saved_message is not None
+            result = saved_message.content
+        else:
+            result = self.complete()
         self.messages.append({"role": "assistant", "content": result})
         return result
 
@@ -208,6 +241,8 @@ class Chatbot:
         kwargs.setdefault("model", self.model)
         kwargs.setdefault("temperature", self.temperature)
         kwargs.setdefault("messages", self.messages)
+        kwargs.setdefault("index", self.index)
+        kwargs.setdefault("cache", self.cache)
         result = self.__class__(**kwargs)
         self.children.append(result)
         return result
@@ -236,7 +271,7 @@ class Chatbot:
         check_for_refusal = refusal_checking_bot.chat(
             "Did your response contain the information I requested, "
             "or was there a reason you could not or did not answer it "
-            "as asked? Don't apologies, don't correct your answer. "
+            "as asked? Don't apologise, don't correct your answer. "
             "Just tell me if you provided the requested information."
         )
 
@@ -411,4 +446,172 @@ class DummyChatbot(Chatbot):
         return None
 
     def complete(self) -> str:
-        raise TypeError("Dummy chatbot cannot complete conversations.")
+        return os.urandom(16).hex()
+
+
+CREATE_TRANSCRIPT_SQL = """
+create table if not exists transcripts(
+    id integer primary key,
+    parent integer not null,
+    role text not null,
+    content text not null,
+    unique (parent, role, content)
+)
+"""
+
+CREATE_COMPLETIONS_SQL = """
+create table if not exists completions(
+    parent integer not null,
+    model text not null,
+    ix integer not null,
+    next_message integer not null,
+    unique (parent, model, ix),
+    foreign key (next_message) references transcripts(id)
+)
+"""
+
+
+class SavedMessage(BaseModel):
+    id: int
+    parent: int
+    role: Role
+    content: str
+
+
+class ChatCache:
+    CONNECTIONS = {}
+
+    @classmethod
+    def default_cache(cls):
+        try:
+            return cls.__default_cache
+        except AttributeError:
+            pass
+        cls.__default_cache = ChatCache(os.environ.get("CHAT_CACHE_DB", ":memory:"))
+        return cls.__default_cache
+
+    def __init__(self, connection):
+        if isinstance(connection, str):
+            try:
+                connection = self.CONNECTIONS[connection]
+            except KeyError:
+                db = sqlite3.connect(connection)
+                self.CONNECTIONS[connection] = db
+                connection = db
+
+        self.__connection = connection
+        self.__lock = RLock()
+
+        with self.__cursor() as c:
+            c.execute(CREATE_TRANSCRIPT_SQL)
+            c.execute(CREATE_COMPLETIONS_SQL)
+
+        self.get_message = lru_cache(1024)(self.get_message)
+        self.__next_transcript = lru_cache(1024)(self.__next_transcript)
+
+    @contextmanager
+    def __cursor(self) -> Iterator[sqlite3.Cursor]:
+        with self.__lock:
+            with self.__connection:
+                cursor = self.__connection.cursor()
+                try:
+                    yield cursor
+                finally:
+                    cursor.close()
+
+    def messages_to_transcript_id(self, transcript: list[Message]) -> int:
+        result = 0
+        for message in transcript:
+            result = self.__next_transcript(parent=result, **message)
+        return result
+
+    def get_message(self, id: int) -> SavedMessage | None:
+        if id == 0:
+            return None
+        with self.__cursor() as cursor:
+            cursor.execute(
+                "select parent, role, content from transcripts where id = ?",
+                (id,),
+            )
+            parent, role, content = cursor.fetchone()
+            assert parent < id
+            return SavedMessage(id=id, parent=parent, role=role, content=content)
+
+    def id_to_messages(self, transcript_id: int) -> list[Message]:
+        result = []
+        while True:
+            message = self.get_message(transcript_id)
+            if message is None:
+                break
+            result.append(
+                {
+                    "role": message.role,
+                    "content": message.content,
+                }
+            )
+            transcript_id = message.parent
+        result.reverse()
+        return result
+
+    def completion(
+        self, transcript_id: int, model: str, index: int, complete: Callable[[], str]
+    ) -> int:
+        with self.__cursor() as cursor:
+            cursor.execute(
+                "select next_message from completions where parent = ? and model = ? and ix = ?",
+                (
+                    transcript_id,
+                    model,
+                    index,
+                ),
+            )
+            for (next_message,) in cursor:
+                return next_message
+
+        result = self.__next_transcript(
+            parent=transcript_id, content=complete(), role="assistant"
+        )
+
+        with self.__cursor() as cursor:
+            cursor.execute(
+                "insert into completions(parent, model, ix, next_message) values(?, ?, ?, ?) on conflict do nothing",
+                (transcript_id, model, index, result),
+            )
+            cursor.execute(
+                "select next_message from completions where parent = ? and model = ? and ix = ?",
+                (
+                    transcript_id,
+                    model,
+                    index,
+                ),
+            )
+            for (result,) in cursor:
+                return result
+            assert False, "Unreachable"
+
+    def __insert_or_get(self, table: str, **kwargs) -> int:
+        columns = []
+        values = []
+        for k, v in kwargs.items():
+            columns.append(k)
+            values.append(v)
+
+        clause = " and ".join([f"{column} = ?" for column in columns])
+        select_statement = f"select id from {table} where {clause}"
+
+        with self.__cursor() as cursor:
+            cursor.execute(select_statement, tuple(values))
+            for (id,) in cursor:
+                return id
+            cursor.execute(
+                f"insert into transcripts({', '.join(columns)}) values({', '.join(['?'] * len(columns))}) returning id",
+                tuple(values),
+            )
+            for (id,) in cursor:
+                return id
+            assert False, "Unreachable"
+
+    def __next_transcript(self, parent: int | None, role: Role, content: str) -> int:
+        return self.__insert_or_get(
+            "transcripts", parent=parent or 0, role=role, content=content
+        )

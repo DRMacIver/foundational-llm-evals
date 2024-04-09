@@ -333,3 +333,21 @@ def test_can_conform_badly_formed_json():
 
 def test_can_extract_data_stupidly_put_in_type_field():
     assert conform_json_to_type(str, {"type": "hello"}) == "hello"
+
+
+def test_can_get_numeric_string_answer_out_of_indirect_response(model):
+    bot = Chatbot(
+        model,
+        messages=[
+            {
+                "role": "user",
+                "content": "1008 is an integer represented in base 16. What is it when represented in base 10?",
+            },
+            {
+                "role": "assistant",
+                "content": "Okay, let's approach this step by step:\n\n1) In base 16 (hexadecimal), each digit can be represented by 0-9 and A-F, where A=10, B=11, C=12, D=13, E=14, and F=15.\n\n2) So, 1008 in base 16 is actually:\n\n   1 * 16^3 + 0 * 16^2 + 0 * 16^1 + 8 * 16^0\n\n3) Let's calculate each term:\n\n   1 * 16^3 = 1 * 4096 = 4096\n   0 * 16^2 = 0 * 256 = 0\n   0 * 16^1 = 0 * 16 = 0\n   8 * 16^0 = 8 * 1 = 8\n\n4) Now, let's add these terms:\n\n   4096 + 0 + 0 + 8 = 4104\n\nTherefore, 1008 in base 16 is equal to 4104 in base 10.",
+            },
+        ],
+    )
+
+    assert bot.structure(str) == "4104"

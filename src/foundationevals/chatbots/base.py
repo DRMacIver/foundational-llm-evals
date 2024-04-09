@@ -1,4 +1,4 @@
-from typing import TypedDict, Literal, Any, Type, TypeVar
+from typing import TypedDict, Literal, Any, Type, TypeVar, cast
 from pydantic import TypeAdapter, ValidationError
 import json
 import re
@@ -62,6 +62,16 @@ Important instructions:
 * Do not in any way modify your previous answer, even if you now realise it's incorrect.
 """.strip()
 
+EXTRACT_ANSWER_PROMPT = """
+Please concisely state just the part of your previous response that contains the answer as a JSON formatted string.
+
+Important instructions:
+    * Do not include any unnecessary punctuation in your answer.
+    * Do not provide any additional context or information.
+    * Do not restate any part of the question in your answer or explanations.
+    * Do not contain any explanations of why it's the answer.
+"""
+
 
 class FailedToAnswer(Exception):
     pass
@@ -108,6 +118,8 @@ def conform_json_to_type(target_type: Type[T], json_object: Any) -> T:
     except ValidationError:
         pass
 
+    if target_type == str and isinstance(json_object, (int, float)):
+        return str(json_object)  # type: ignore
     if isinstance(json_object, dict):
         if len(json_object) == 1:
             (wrapped,) = json_object.values()
@@ -404,11 +416,14 @@ class Chatbot:
 
         adapter = TypeAdapter(target)
 
-        response = structuring_bot.chat(
-            STRUCTURING_PROMPT.format(
-                SCHEMA=json.dumps(adapter.json_schema()),
-            ),
-        )
+        if target == str:
+            response = structuring_bot.chat(EXTRACT_ANSWER_PROMPT)
+        else:
+            response = structuring_bot.chat(
+                STRUCTURING_PROMPT.format(
+                    SCHEMA=json.dumps(adapter.json_schema()),
+                ),
+            )
 
         validation_error = False
         for parsed in reversed(extract_json_objects(response)):

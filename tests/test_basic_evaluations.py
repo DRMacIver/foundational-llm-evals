@@ -1,3 +1,4 @@
+from hypothesis.stateful import initialize
 from foundationevals.evaluations.evaluation import (
     SingleProblemEvaluation,
     run_basic_evaluation,
@@ -7,6 +8,10 @@ from random import Random
 from foundationevals.chatbots import Chatbot
 from foundationevals.evaluations.wordgen import WordConstraintsProblemSet
 import pytest
+from foundationevals.evaluations.arithmetic import (
+    BaseConversionProblems,
+    PairOfPositiveIntegers,
+)
 
 
 class SmallIntegerProblemSet(ProblemSet[int]):
@@ -54,14 +59,17 @@ evaluations = pytest.mark.parametrize(
     [
         SmallIntegerProblemSet,
         WordConstraintsProblemSet,
+        PairOfPositiveIntegers,
+        BaseConversionProblems,
     ],
 )
 
 
 @evaluations
 def test_always_failing_example(evaluation):
+    problem_set = evaluation()
     report = run_basic_evaluation(
-        evaluation(),
+        problem_set,
         always_fails,
         chatbot=Chatbot("dummy"),
         n_samples=10,
@@ -71,7 +79,10 @@ def test_always_failing_example(evaluation):
     assert report.answer_rate == 1
 
     assert report.reduced_exemplar is not None
-    assert report.reduced_exemplar.problem == 0
+    for r in report.initial_random_sample:
+        assert problem_set.reduction_key(
+            report.reduced_exemplar.problem
+        ) <= problem_set.reduction_key(r.problem)
 
 
 def always_succeeds(evaluation: SingleProblemEvaluation[int]) -> None:

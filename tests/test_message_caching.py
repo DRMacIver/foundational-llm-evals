@@ -30,7 +30,7 @@ def test_caches_completions_by_index_and_model():
         runs.append(run)
         for model in ["dummy1", "dummy2"]:
             for index in range(2):
-                run.append(cache.completion(0, model, index, new_completion))
+                run.append(cache.completion(0, model, 0.1, index, new_completion))
 
     for run in runs:
         assert len(set(run)) == len(run)
@@ -39,16 +39,16 @@ def test_caches_completions_by_index_and_model():
     assert x == y
 
 
-def test_chatbot_interactions_are_cached():
-    x = Chatbot("dummy", index=0)
-    y = Chatbot("dummy", index=0)
+def test_warm_chatbot_interactions_are_cached():
+    x = Chatbot("dummy", index=0, temperature=0.1)
+    y = Chatbot("dummy", index=0, temperature=0.1)
 
     assert x.chat("Hello world") == y.chat("Hello world")
 
 
-def test_chatbot_interactions_with_different_index_are_cached_differently():
-    x = Chatbot("dummy", index=0)
-    y = Chatbot("dummy", index=1)
+def test_warm_chatbot_interactions_with_different_index_are_cached_differently():
+    x = Chatbot("dummy", index=0, temperature=0.1)
+    y = Chatbot("dummy", index=1, temperature=0.1)
 
     assert x.chat("Hello world") != y.chat("Hello world")
 
@@ -79,3 +79,15 @@ def test_commits_cache_to_disk(tmpdir):
     y = Chatbot("dummy", index=0, cache=db)
     assert y.cache != ChatCache.default_cache()
     assert y.chat("hello") == chat1
+
+
+def test_cache_depends_on_temperature():
+    x = Chatbot("dummy", index=0, temperature=0.1)
+    y = Chatbot("dummy", index=0, temperature=0.15)
+    assert x.chat("hello") != y.chat("hello")
+
+
+def test_always_caches_low_temperature_to_same_index():
+    x = Chatbot("dummy", index=0, temperature=0)
+    y = Chatbot("dummy", index=1, temperature=0)
+    assert x.chat("hello") == y.chat("hello")

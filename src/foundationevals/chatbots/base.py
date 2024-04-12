@@ -237,7 +237,10 @@ class Chatbot:
             result_id = self.cache.completion(
                 self.cache.messages_to_transcript_id(self.messages),
                 self.model,
-                self.index,
+                self.temperature,
+                # We always cache temperature=0 the same way because it's
+                # supposed to be deterministic.
+                self.index if self.temperature > 0 else 0,
                 self.complete,
             )
             saved_message = self.cache.get_message(result_id)
@@ -478,9 +481,10 @@ CREATE_COMPLETIONS_SQL = """
 create table if not exists completions(
     parent integer not null,
     model text not null,
+    temperature float not null,
     ix integer not null,
     next_message integer not null,
-    unique (parent, model, ix),
+    unique (parent, model, temperature, ix),
     foreign key (next_message) references transcripts(id)
 )
 """
@@ -569,14 +573,20 @@ class ChatCache:
         return result
 
     def completion(
-        self, transcript_id: int, model: str, index: int, complete: Callable[[], str]
+        self,
+        transcript_id: int,
+        model: str,
+        temperature: float,
+        index: int,
+        complete: Callable[[], str],
     ) -> int:
         with self.__cursor() as cursor:
             cursor.execute(
-                "select next_message from completions where parent = ? and model = ? and ix = ?",
+                "select next_message from completions where parent = ? and model = ? and temperature = ? and ix = ?",
                 (
                     transcript_id,
                     model,
+                    temperature,
                     index,
                 ),
             )
@@ -589,14 +599,15 @@ class ChatCache:
 
         with self.__cursor() as cursor:
             cursor.execute(
-                "insert into completions(parent, model, ix, next_message) values(?, ?, ?, ?) on conflict do nothing",
-                (transcript_id, model, index, result),
+                "insert into completions(parent, model,temperature,  ix, next_message) values(?, ?, ?, ?, ?) on conflict do nothing",
+                (transcript_id, model, temperature, index, result),
             )
             cursor.execute(
-                "select next_message from completions where parent = ? and model = ? and ix = ?",
+                "select next_message from completions where parent = ? and model = ? and temperature = ? and ix = ?",
                 (
                     transcript_id,
                     model,
+                    temperature,
                     index,
                 ),
             )

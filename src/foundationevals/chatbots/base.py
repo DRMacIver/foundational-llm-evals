@@ -1,23 +1,12 @@
-from typing import TypedDict, Literal, Any, Type, TypeVar, cast
+from typing import TypedDict, Any, Type, TypeVar
 from pydantic import TypeAdapter, ValidationError
 import json
 import re
 import os
-from contextlib import contextmanager
-import sqlite3
-from typing import Iterator, Callable
-from functools import lru_cache
-from pydantic import BaseModel
-from threading import RLock
+from foundationevals.storage import Role, Storage, Message
 
 
 T = TypeVar("T")
-Role = Literal["user", "assistant", "system"]
-
-
-class Message(TypedDict):
-    role: Role
-    content: str
 
 
 REFUSAL_PHRASES = [
@@ -190,7 +179,7 @@ class Chatbot:
     def __init__(
         self,
         model: str,
-        cache: "ChatCache | str | None" = None,
+        storage: "Storage | str | None" = None,
         index: int | None = None,
         temperature: float = 0.0,
         max_tokens: int = 1024,
@@ -200,12 +189,12 @@ class Chatbot:
         self.messages: list[Message] = [] if messages is None else list(messages)
         self.temperature: float = temperature
         self.max_tokens = max_tokens
-        if cache is None:
-            cache = ChatCache.default_cache()
-        elif isinstance(cache, str):
-            cache = ChatCache(cache)
-        assert isinstance(cache, ChatCache)
-        self.cache = cache
+        if storage is None:
+            storage = Storage.default_storage()
+        elif isinstance(storage, str):
+            storage = Storage(storage)
+        assert isinstance(storage, Storage)
+        self.storage = storage
         self.index = index
         self.__client = None
         self.children = []
@@ -234,8 +223,8 @@ class Chatbot:
         if response is not None:
             result = response
         elif self.index is not None:
-            result_id = self.cache.completion(
-                self.cache.messages_to_transcript_id(self.messages),
+            result_id = self.storage.completion(
+                self.storage.messages_to_transcript_id(self.messages),
                 self.model,
                 self.temperature,
                 # We always cache temperature=0 the same way because it's
@@ -243,7 +232,7 @@ class Chatbot:
                 self.index if self.temperature > 0 else 0,
                 self.complete,
             )
-            saved_message = self.cache.get_message(result_id)
+            saved_message = self.storage.get_message(result_id)
             assert saved_message is not None
             result = saved_message.content
         else:
@@ -257,7 +246,7 @@ class Chatbot:
         kwargs.setdefault("temperature", self.temperature)
         kwargs.setdefault("messages", self.messages)
         kwargs.setdefault("index", self.index)
-        kwargs.setdefault("cache", self.cache)
+        kwargs.setdefault("storage", self.storage)
         result = self.__class__(**kwargs)
         self.children.append(result)
         return result
@@ -465,179 +454,3 @@ class DummyChatbot(Chatbot):
 
     def complete(self) -> str:
         return os.urandom(16).hex()
-
-
-CREATE_TRANSCRIPT_SQL = """
-create table if not exists transcripts(
-    id integer primary key,
-    parent integer not null,
-    role text not null,
-    content text not null,
-    unique (parent, role, content)
-)
-"""
-
-CREATE_COMPLETIONS_SQL = """
-create table if not exists completions(
-    parent integer not null,
-    model text not null,
-    temperature float not null,
-    ix integer not null,
-    next_message integer not null,
-    unique (parent, model, temperature, ix),
-    foreign key (next_message) references transcripts(id)
-)
-"""
-
-
-class SavedMessage(BaseModel):
-    id: int
-    parent: int
-    role: Role
-    content: str
-
-
-class ChatCache:
-    CONNECTIONS = {}
-
-    @classmethod
-    def default_cache(cls):
-        try:
-            return cls.__default_cache
-        except AttributeError:
-            pass
-        cls.__default_cache = ChatCache(os.environ.get("CHAT_CACHE_DB", ":memory:"))
-        return cls.__default_cache
-
-    def __init__(self, connection):
-        if isinstance(connection, str):
-            try:
-                connection = self.CONNECTIONS[connection]
-            except KeyError:
-                db = sqlite3.connect(connection)
-                self.CONNECTIONS[connection] = db
-                connection = db
-
-        self.__connection = connection
-        self.__lock = RLock()
-
-        with self.__cursor() as c:
-            c.execute(CREATE_TRANSCRIPT_SQL)
-            c.execute(CREATE_COMPLETIONS_SQL)
-
-        self.get_message = lru_cache(1024)(self.get_message)
-        self.__next_transcript = lru_cache(1024)(self.__next_transcript)
-
-    @contextmanager
-    def __cursor(self) -> Iterator[sqlite3.Cursor]:
-        with self.__lock:
-            with self.__connection:
-                cursor = self.__connection.cursor()
-                try:
-                    yield cursor
-                finally:
-                    cursor.close()
-
-    def messages_to_transcript_id(self, transcript: list[Message]) -> int:
-        result = 0
-        for message in transcript:
-            result = self.__next_transcript(parent=result, **message)
-        return result
-
-    def get_message(self, id: int) -> SavedMessage | None:
-        if id == 0:
-            return None
-        with self.__cursor() as cursor:
-            cursor.execute(
-                "select parent, role, content from transcripts where id = ?",
-                (id,),
-            )
-            parent, role, content = cursor.fetchone()
-            assert parent < id
-            return SavedMessage(id=id, parent=parent, role=role, content=content)
-
-    def id_to_messages(self, transcript_id: int) -> list[Message]:
-        result = []
-        while True:
-            message = self.get_message(transcript_id)
-            if message is None:
-                break
-            result.append(
-                {
-                    "role": message.role,
-                    "content": message.content,
-                }
-            )
-            transcript_id = message.parent
-        result.reverse()
-        return result
-
-    def completion(
-        self,
-        transcript_id: int,
-        model: str,
-        temperature: float,
-        index: int,
-        complete: Callable[[], str],
-    ) -> int:
-        with self.__cursor() as cursor:
-            cursor.execute(
-                "select next_message from completions where parent = ? and model = ? and temperature = ? and ix = ?",
-                (
-                    transcript_id,
-                    model,
-                    temperature,
-                    index,
-                ),
-            )
-            for (next_message,) in cursor:
-                return next_message
-
-        result = self.__next_transcript(
-            parent=transcript_id, content=complete(), role="assistant"
-        )
-
-        with self.__cursor() as cursor:
-            cursor.execute(
-                "insert into completions(parent, model,temperature,  ix, next_message) values(?, ?, ?, ?, ?) on conflict do nothing",
-                (transcript_id, model, temperature, index, result),
-            )
-            cursor.execute(
-                "select next_message from completions where parent = ? and model = ? and temperature = ? and ix = ?",
-                (
-                    transcript_id,
-                    model,
-                    temperature,
-                    index,
-                ),
-            )
-            for (result,) in cursor:
-                return result
-            assert False, "Unreachable"
-
-    def __insert_or_get(self, table: str, **kwargs) -> int:
-        columns = []
-        values = []
-        for k, v in kwargs.items():
-            columns.append(k)
-            values.append(v)
-
-        clause = " and ".join([f"{column} = ?" for column in columns])
-        select_statement = f"select id from {table} where {clause}"
-
-        with self.__cursor() as cursor:
-            cursor.execute(select_statement, tuple(values))
-            for (id,) in cursor:
-                return id
-            cursor.execute(
-                f"insert into transcripts({', '.join(columns)}) values({', '.join(['?'] * len(columns))}) returning id",
-                tuple(values),
-            )
-            for (id,) in cursor:
-                return id
-            assert False, "Unreachable"
-
-    def __next_transcript(self, parent: int | None, role: Role, content: str) -> int:
-        return self.__insert_or_get(
-            "transcripts", parent=parent or 0, role=role, content=content
-        )

@@ -5,6 +5,7 @@ from humanize import ordinal
 from pydantic import BaseModel, field_validator, ValidationError
 from foundationevals.evaluations.evaluation import (
     BadData,
+    BasicEvaluation,
     ProblemSet,
     SingleProblemEvaluation,
 )
@@ -119,59 +120,68 @@ def words_matching_rules(rules):
     return words
 
 
-def evaluate_ability_to_generate_words(
-    evaluation: SingleProblemEvaluation[WordConstraints],
-) -> None:
-    sowpods = word_list("sowpods")
-    rules = evaluation.problem.rules
-    prompt_parts = [
-        f"Please give me a list of words satisfying the following condition{'s' if len(rules) > 1 else ''}:\n"
-    ]
-    for rule in evaluation.problem.rules:
-        if isinstance(rule, Length):
-            if rule.min_length == rule.max_length:
-                prompt_parts.append(
-                    f"It should have exactly {rule.min_length} characters."
-                )
-            else:
-                prompt_parts.append(
-                    f"It should have between {rule.min_length} and {rule.max_length} characters."
-                )
-        elif isinstance(rule, Character):
-            if rule.position == 0:
-                prompt_parts.append(
-                    f"It should start with the character {rule.character}."
-                )
-            elif rule.position == -1:
-                prompt_parts.append(
-                    f"It should end with the character {rule.character}."
-                )
-            elif rule.position < 0:
-                pos = ordinal(-rule.position)
-                prompt_parts.append(
-                    f"The {pos} character from the end should be {rule.character}."
-                )
-            else:
-                pos = ordinal(rule.position + 1)
-                prompt_parts.append(f"The {pos} character should be {rule.character}.")
+class WordGenerationEvaluation(BasicEvaluation[WordConstraints]):
+    def new_problem_set(self) -> ProblemSet[WordConstraints]:
+        return WordConstraintsProblemSet()
 
-    prompt = "\n".join(prompt_parts)
-
-    evaluation.chatbot.chat(prompt)
-    results = evaluation.parse(list[str])
-
-    if not results:
-        evaluation.add_error("No words were given.")
-        return
-
-    for word in results:
-        if word.upper() not in sowpods:
-            evaluation.add_note(f"{word} is not in the SOWPODS word list.")
+    def run_single_evaluation(
+        self, evaluation: SingleProblemEvaluation[WordConstraints]
+    ) -> None:
+        sowpods = word_list("sowpods")
+        rules = evaluation.problem.rules
+        prompt_parts = [
+            f"Please give me a list of words satisfying the following condition{'s' if len(rules) > 1 else ''}:\n"
+        ]
         for rule in evaluation.problem.rules:
-            if not rule.matches(word):
-                evaluation.add_note(f"Word {word} does not match the rule {rule}")
-                if isinstance(rule, Character):
-                    evaluation.add_error("Returned a word with an incorrect character.")
+            if isinstance(rule, Length):
+                if rule.min_length == rule.max_length:
+                    prompt_parts.append(
+                        f"It should have exactly {rule.min_length} characters."
+                    )
                 else:
-                    assert isinstance(rule, Length)
-                    evaluation.add_error("Returned a word of the wrong length")
+                    prompt_parts.append(
+                        f"It should have between {rule.min_length} and {rule.max_length} characters."
+                    )
+            elif isinstance(rule, Character):
+                if rule.position == 0:
+                    prompt_parts.append(
+                        f"It should start with the character {rule.character}."
+                    )
+                elif rule.position == -1:
+                    prompt_parts.append(
+                        f"It should end with the character {rule.character}."
+                    )
+                elif rule.position < 0:
+                    pos = ordinal(-rule.position)
+                    prompt_parts.append(
+                        f"The {pos} character from the end should be {rule.character}."
+                    )
+                else:
+                    pos = ordinal(rule.position + 1)
+                    prompt_parts.append(
+                        f"The {pos} character should be {rule.character}."
+                    )
+
+        prompt = "\n".join(prompt_parts)
+        print(prompt)
+
+        evaluation.chatbot.chat(prompt)
+        results = evaluation.parse(list[str])
+
+        if not results:
+            evaluation.add_error("No words were given.")
+            return
+
+        for word in results:
+            if word.upper() not in sowpods:
+                evaluation.add_note(f"{word} is not in the SOWPODS word list.")
+            for rule in evaluation.problem.rules:
+                if not rule.matches(word):
+                    evaluation.add_note(f"Word {word} does not match the rule {rule}")
+                    if isinstance(rule, Character):
+                        evaluation.add_error(
+                            "Returned a word with an incorrect character."
+                        )
+                    else:
+                        assert isinstance(rule, Length)
+                        evaluation.add_error("Returned a word of the wrong length")

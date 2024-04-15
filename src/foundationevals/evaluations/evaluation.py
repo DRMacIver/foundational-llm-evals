@@ -10,9 +10,9 @@ from concurrent.futures import ThreadPoolExecutor
 from shrinkray.problem import BasicReductionProblem
 from shrinkray.reducer import ShrinkRay
 import trio
-from random import Random
 from shrinkray.work import WorkContext, Volume
 from tqdm import tqdm, trange
+from collections import deque
 
 Problem = TypeVar("Problem")
 Answer = TypeVar("Answer")
@@ -141,6 +141,24 @@ class BadData(Exception):
     pass
 
 
+def extract_generic_parameter(current, parent):
+    queue = deque([current])
+
+    while queue:
+        cls = queue.popleft()
+        if hasattr(cls, "__orig_bases__"):
+            for base in cls.__orig_bases__:
+                queue.append(base)
+                if hasattr(base, "__origin__") and issubclass(base.__origin__, parent):
+                    return base.__args__[0]
+        else:
+            queue.extend(cls.__bases__)
+    raise ValueError(
+        "Could not determine parameter of {parent.__class__.__name__} in "
+        "{current.__class__.__name__}. Please set it explicitly."
+    )
+
+
 class ProblemSet(ABC, Generic[Problem]):
     def __init__(self, problem_type: Type[Problem] | None = None):
         self.__problem_type = problem_type
@@ -149,22 +167,7 @@ class ProblemSet(ABC, Generic[Problem]):
     @property
     def problem_type(self) -> Type[Problem]:
         if self.__problem_type is None:
-            for cls in self.__class__.mro():
-                if self.__problem_type is not None:
-                    break
-                if hasattr(cls, "__orig_bases__"):
-                    for base in cls.__orig_bases__:
-                        if (
-                            hasattr(base, "__origin__")
-                            and base.__origin__ == ProblemSet
-                        ):
-                            problem_type = base.__args__[0]
-                            self.__problem_type = problem_type
-                            break
-            if self.__problem_type is None:
-                raise ValueError(
-                    "Could not determine problem type. Please set it explicitly."
-                )
+            self.__problem_type = extract_generic_parameter(self.__class__, ProblemSet)
         assert self.__problem_type is not None
         return self.__problem_type  # type: ignore
 
@@ -324,94 +327,151 @@ class FullReport(BaseModel, Generic[Problem]):
         return result
 
 
-def run_basic_evaluation(
-    problem_set: ProblemSet[Problem],
-    evaluation: Callable[[SingleProblemEvaluation[Problem]], None],
-    *,
-    chatbot: Chatbot,
-    random: Random | None = None,
-    n_samples=1000,
-    stop_on_first_failure=False,
-    parallelism=1,
-    reduce=False,
-) -> FullReport[Problem]:
-    chatbot.freeze()
-    if random is None:
-        random = Random()
+class Evaluation(ABC, Generic[Problem]):
+    @abstractmethod
+    def run(
+        self,
+        *,
+        chatbot: Chatbot,
+        random: Random | None = None,
+        n_samples=1000,
+        stop_on_first_failure=False,
+        parallelism=1,
+        reduce=False,
+    ) -> FullReport[Problem]: ...
 
-    def evaluate_problem(problem: Problem) -> SingleProblemReport[Problem]:
-        problem_evaluation = SingleProblemEvaluation(
-            chatbot=chatbot.clone(),
-            problem=problem,
-        )
-        try:
-            evaluation(problem_evaluation)
-        except NoValidAnswer:
-            pass
-        return problem_evaluation.report()
 
-    if stop_on_first_failure:
-        # TODO: Parallel find first
-        parallelism = 1
+class BasicEvaluationProblemSet(ProblemSet[Problem]):
+    def __init__(self, evaluation: "BasicEvaluation[Problem]"):
+        super().__init__()
+        self.evaluation = evaluation
+        self.__problem_type = None
 
-    if parallelism == 1:
-        if stop_on_first_failure:
-            initial_results = []
-            for _ in trange(n_samples):
-                one_eval = evaluate_problem(problem_set.generate(random))
-                initial_results.append(one_eval)
-                if one_eval.status == ReportedStatus.INCORRECT:
-                    break
-        else:
-            initial_results = [
-                evaluate_problem(problem_set.generate(random))
-                for _ in trange(n_samples)
-            ]
-    else:
-        with ThreadPoolExecutor(max_workers=parallelism) as executor:
-            futures = [
-                executor.submit(evaluate_problem, problem_set.generate(random))
-                for _ in trange(n_samples)
-            ]
-            initial_results = [future.result() for future in tqdm(futures)]
-
-    other_samples = []
-    reduced_exemplar = None
-    problem_to_report = {}
-
-    if reduce:
-        incorrect_answers = [
-            r for r in initial_results if r.status == ReportedStatus.INCORRECT
-        ]
-        if incorrect_answers:
-            incorrect_answers = [r for r in incorrect_answers]
-            target_confidence = max([r.confidence or 0.0 for r in incorrect_answers])
-            maximally_confident_incorrect_answers = [
-                r for r in incorrect_answers if r.confidence == target_confidence
-            ]
-            assert maximally_confident_incorrect_answers
-            exemplar_problem = min(
-                maximally_confident_incorrect_answers,
-                key=lambda r: problem_set.reduction_key(r.problem),
+    @property
+    def problem_type(self):
+        if self.__problem_type is None:
+            self.__problem_type = extract_generic_parameter(
+                self.evaluation.__class__, BasicEvaluation
             )
+        return self.__problem_type
 
-            def is_interesting(problem: Problem) -> bool:
-                report = evaluate_problem(problem)
-                other_samples.append(report)
-                problem_to_report[problem_set.hashable_key(problem)] = report
-                if report.status != ReportedStatus.INCORRECT:
-                    return False
-                return (report.confidence or 0.0) >= target_confidence
+    def generate(self, random: Random) -> Problem:
+        return self.evaluation.generate(random)
 
-            reduced_exemplar = problem_to_report[
-                problem_set.hashable_key(
-                    problem_set.reduce(exemplar_problem.problem, is_interesting)
-                )
+
+class BasicEvaluation(Evaluation[Problem]):
+    def __init__(self):
+        self.__problem_set = None
+
+    def new_problem_set(self) -> ProblemSet[Problem]:
+        if not hasattr(self, "generate"):
+            raise TypeError("BasicEvaluation must define generate or new_problem_set")
+        return BasicEvaluationProblemSet(self)
+
+    @property
+    def problem_set(self) -> ProblemSet[Problem]:
+        if self.__problem_set is None:
+            self.__problem_set = self.new_problem_set()
+        assert self.__problem_set is not None
+        return self.__problem_set
+
+    @abstractmethod
+    def run_single_evaluation(
+        self, evaluation: SingleProblemEvaluation[Problem]
+    ) -> None: ...
+
+    def run(
+        self,
+        *,
+        chatbot: Chatbot,
+        random: Random | None = None,
+        n_samples=1000,
+        stop_on_first_failure=False,
+        parallelism=1,
+        reduce=False,
+    ) -> FullReport[Problem]:
+
+        chatbot.freeze()
+        if random is None:
+            random = Random()
+
+        def evaluate_problem(problem: Problem) -> SingleProblemReport[Problem]:
+            problem_evaluation = SingleProblemEvaluation(
+                chatbot=chatbot.clone(),
+                problem=problem,
+            )
+            try:
+                self.run_single_evaluation(problem_evaluation)
+            except NoValidAnswer:
+                pass
+            return problem_evaluation.report()
+
+        if stop_on_first_failure:
+            # TODO: Parallel find first
+            parallelism = 1
+
+        if parallelism == 1:
+            if stop_on_first_failure:
+                initial_results = []
+                for _ in trange(n_samples):
+                    one_eval = evaluate_problem(self.problem_set.generate(random))
+                    initial_results.append(one_eval)
+                    if one_eval.status == ReportedStatus.INCORRECT:
+                        break
+            else:
+                initial_results = [
+                    evaluate_problem(self.problem_set.generate(random))
+                    for _ in trange(n_samples)
+                ]
+        else:
+            with ThreadPoolExecutor(max_workers=parallelism) as executor:
+                futures = [
+                    executor.submit(evaluate_problem, self.problem_set.generate(random))
+                    for _ in trange(n_samples)
+                ]
+                initial_results = [future.result() for future in tqdm(futures)]
+
+        other_samples = []
+        reduced_exemplar = None
+        problem_to_report = {}
+
+        if reduce:
+            incorrect_answers = [
+                r for r in initial_results if r.status == ReportedStatus.INCORRECT
             ]
+            if incorrect_answers:
+                incorrect_answers = [r for r in incorrect_answers]
+                target_confidence = max(
+                    [r.confidence or 0.0 for r in incorrect_answers]
+                )
+                maximally_confident_incorrect_answers = [
+                    r for r in incorrect_answers if r.confidence == target_confidence
+                ]
+                assert maximally_confident_incorrect_answers
+                exemplar_problem = min(
+                    maximally_confident_incorrect_answers,
+                    key=lambda r: self.problem_set.reduction_key(r.problem),
+                )
 
-    return FullReport(
-        model=chatbot.model,
-        initial_random_sample=initial_results,
-        other_samples=other_samples,
-        reduced_exemplar=reduced_exemplar,
-    )
+                def is_interesting(problem: Problem) -> bool:
+                    report = evaluate_problem(problem)
+                    other_samples.append(report)
+                    problem_to_report[self.problem_set.hashable_key(problem)] = report
+                    if report.status != ReportedStatus.INCORRECT:
+                        return False
+                    return (report.confidence or 0.0) >= target_confidence
+
+                reduced_exemplar = problem_to_report[
+                    self.problem_set.hashable_key(
+                        self.problem_set.reduce(
+                            exemplar_problem.problem, is_interesting
+                        )
+                    )
+                ]
+
+        return FullReport(
+            model=chatbot.model,
+            initial_random_sample=initial_results,
+            other_samples=other_samples,
+            reduced_exemplar=reduced_exemplar,
+        )

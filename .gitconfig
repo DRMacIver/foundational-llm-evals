@@ -1,2 +1,2 @@
 [diff "sqlite3"]
-    textconv=./scripts/diff_sqlite.sh
+	textconv=./scripts/diff_sqlite.sh

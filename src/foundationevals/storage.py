@@ -1,11 +1,12 @@
-import sqlite3
-from typing import Iterator, Callable, Literal, TypedDict
-from functools import lru_cache
-from pydantic import BaseModel
-from threading import RLock
-from contextlib import contextmanager
 import os
+import sqlite3
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from functools import lru_cache
+from threading import RLock
+from typing import Literal, TypedDict
 
+from pydantic import BaseModel
 
 Role = Literal["user", "assistant", "system"]
 
@@ -78,13 +79,12 @@ class Storage:
 
     @contextmanager
     def cursor(self) -> Iterator[sqlite3.Cursor]:
-        with self.__lock:
-            with self.connection:
-                cursor = self.connection.cursor()
-                try:
-                    yield cursor
-                finally:
-                    cursor.close()
+        with self.__lock, self.connection:
+            cursor = self.connection.cursor()
+            try:
+                yield cursor
+            finally:
+                cursor.close()
 
     def messages_to_transcript_id(self, transcript: list[Message]) -> int:
         result = 0
@@ -161,7 +161,7 @@ class Storage:
             )
             for (result,) in cursor:
                 return result
-            assert False, "Unreachable"
+            raise AssertionError("Unreachable")
 
     def __insert_or_get(self, table: str, **kwargs) -> int:
         columns = []
@@ -183,7 +183,7 @@ class Storage:
             )
             for (id,) in cursor:
                 return id
-            assert False, "Unreachable"
+            raise AssertionError("Unreachable")
 
     def __next_transcript(self, parent: int | None, role: Role, content: str) -> int:
         return self.__insert_or_get(

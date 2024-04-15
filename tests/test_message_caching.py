@@ -1,9 +1,10 @@
-from hypothesis import given, strategies as st, example
-
-from foundationevals.chatbots.base import Message, Chatbot
-from foundationevals.storage import Storage
-import sqlite3
 import os
+import sqlite3
+
+from hypothesis import given
+
+from foundationevals.chatbots.base import Chatbot, Message
+from foundationevals.storage import Storage
 
 
 @given(...)

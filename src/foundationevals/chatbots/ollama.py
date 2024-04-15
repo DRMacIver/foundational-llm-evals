@@ -1,5 +1,6 @@
-from foundationevals.chatbots.base import Chatbot
 from typing import Any
+
+from foundationevals.chatbots.base import Chatbot
 
 
 class Ollama(Chatbot):

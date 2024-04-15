@@ -1,15 +1,17 @@
-from foundationevals.data.wordlists import word_list
+import json
 from abc import ABC, abstractmethod
 from random import Random
+
 from humanize import ordinal
-from pydantic import BaseModel, field_validator, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
+
+from foundationevals.data.wordlists import word_list
 from foundationevals.evaluations.evaluation import (
     BadData,
     BasicEvaluation,
     ProblemSet,
     SingleProblemEvaluation,
 )
-import json
 
 
 class Rule(ABC, BaseModel):

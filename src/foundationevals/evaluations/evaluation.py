@@ -1,18 +1,20 @@
-from random import Random
-from typing import Generic, TypeVar, Type, Callable, Any
-from enum import Enum, auto
 import traceback
-from foundationevals.chatbots.base import Chatbot, FailedToAnswer, Message
-from pydantic import TypeAdapter, ValidationError
 from abc import ABC, abstractmethod
-from pydantic import BaseModel, ConfigDict
+from collections import deque
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from enum import Enum, auto
+from random import Random
+from typing import Any, Generic, TypeVar
+
+import trio
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+from tqdm import tqdm, trange
+
+from foundationevals.chatbots.base import Chatbot, FailedToAnswer, Message
 from shrinkray.problem import BasicReductionProblem
 from shrinkray.reducer import ShrinkRay
-import trio
-from shrinkray.work import WorkContext, Volume
-from tqdm import tqdm, trange
-from collections import deque
+from shrinkray.work import Volume, WorkContext
 
 Problem = TypeVar("Problem")
 Answer = TypeVar("Answer")
@@ -81,7 +83,7 @@ class SingleProblemEvaluation(Generic[Problem]):
         if self.status != EvaluationResultStatus.INCOMPLETE:
             raise ValueError("Cannot change the status of a completed scorecard.")
 
-    def parse(self, answer_type: Type[Answer]) -> Answer:
+    def parse(self, answer_type: type[Answer]) -> Answer:
         """Attempts to parse the chatbot's last response into a structured answer
         of the right type, setting all of the main scorecard attributes.
 
@@ -160,12 +162,12 @@ def extract_generic_parameter(current, parent):
 
 
 class ProblemSet(ABC, Generic[Problem]):
-    def __init__(self, problem_type: Type[Problem] | None = None):
+    def __init__(self, problem_type: type[Problem] | None = None):
         self.__problem_type = problem_type
         self.__adapter = None
 
     @property
-    def problem_type(self) -> Type[Problem]:
+    def problem_type(self) -> type[Problem]:
         if self.__problem_type is None:
             self.__problem_type = extract_generic_parameter(self.__class__, ProblemSet)
         assert self.__problem_type is not None
@@ -440,7 +442,7 @@ class BasicEvaluation(Evaluation[Problem]):
                 r for r in initial_results if r.status == ReportedStatus.INCORRECT
             ]
             if incorrect_answers:
-                incorrect_answers = [r for r in incorrect_answers]
+                incorrect_answers = list(incorrect_answers)
                 target_confidence = max(
                     [r.confidence or 0.0 for r in incorrect_answers]
                 )

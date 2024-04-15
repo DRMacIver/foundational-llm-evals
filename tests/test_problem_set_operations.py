@@ -1,8 +1,9 @@
 import pytest
+from hypothesis import HealthCheck, given, settings, strategies as st
+from hypothesis.errors import Frozen, StopTest
+
 from foundationevals.evaluations.arithmetic import AdditionEvaluation
 from foundationevals.evaluations.wordgen import WordConstraintsProblemSet
-from hypothesis import given, strategies as st, settings, HealthCheck
-from hypothesis.errors import Frozen, StopTest
 
 problem_sets = pytest.mark.parametrize(
     "problem_set",

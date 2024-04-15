@@ -49,6 +49,7 @@ pytest = "^8.1.1"
 jupyter = {extras = ["notebook"], version = "^1.0.0"}
 hypothesis = "^6.99.13"
 hypothesis-trio = "^0.6.0"
+shed = "^2024.3.1"
 
 [tool.flake8]
 max-line-length = 120

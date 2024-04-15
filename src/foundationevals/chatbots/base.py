@@ -1,10 +1,11 @@
-from typing import TypedDict, Any, Type, TypeVar
-from pydantic import TypeAdapter, ValidationError
 import json
-import re
 import os
-from foundationevals.storage import Role, Storage, Message
+import re
+from typing import Any, TypeVar
 
+from pydantic import TypeAdapter, ValidationError
+
+from foundationevals.storage import Message, Storage
 
 T = TypeVar("T")
 
@@ -100,7 +101,7 @@ def extract_json_objects(text: str) -> list[dict[str, Any] | list[Any]]:
     return results
 
 
-def conform_json_to_type(target_type: Type[T], json_object: Any) -> T:
+def conform_json_to_type(target_type: type[T], json_object: Any) -> T:
     adapter = TypeAdapter(target_type)
     try:
         return adapter.validate_python(json_object)
@@ -114,7 +115,7 @@ def conform_json_to_type(target_type: Type[T], json_object: Any) -> T:
             (wrapped,) = json_object.values()
             return conform_json_to_type(target_type, wrapped)
         elif len(json_object) == 2 and "type" in json_object:
-            (wrapped,) = [v for k, v in json_object.items() if k != "type"]
+            (wrapped,) = (v for k, v in json_object.items() if k != "type")
             return conform_json_to_type(target_type, wrapped)
     if isinstance(json_object, list) and len(json_object) == 1:
         try:
@@ -263,7 +264,8 @@ class Chatbot:
     @property
     def last_response(self):
         """The last response from the chatbot."""
-        assert self.messages and self.messages[-1]["role"] == "assistant"
+        assert self.messages
+        assert self.messages[-1]["role"] == "assistant"
         return self.messages[-1]["content"]
 
     def did_the_bot_answer(self) -> bool:
@@ -361,7 +363,7 @@ class Chatbot:
             )
         return result
 
-    def structure(self, target: Type[T]) -> T:
+    def structure(self, target: type[T]) -> T:
         """Takes the last message from this chatbot and tries to convert it
         to a structured value of type T."""
 
@@ -445,7 +447,6 @@ class Chatbot:
 
     def complete(self) -> str:
         """Complete the current conversation with the assistant."""
-        ...
 
 
 class DummyChatbot(Chatbot):

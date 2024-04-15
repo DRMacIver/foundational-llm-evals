@@ -1,5 +1,6 @@
-from foundationevals.chatbots.base import Chatbot, Message
 import time
+
+from foundationevals.chatbots.base import Chatbot
 
 
 class Claude(Chatbot):
@@ -27,4 +28,4 @@ class Claude(Chatbot):
                 if retries_left == 0:
                     raise e
                 time.sleep(1)
-        assert False
+        raise AssertionError

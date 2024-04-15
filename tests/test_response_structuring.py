@@ -1,6 +1,7 @@
+import pytest
+
 from foundationevals.chatbots import Chatbot
 from foundationevals.chatbots.base import FailedToAnswer, conform_json_to_type
-import pytest
 
 
 def check_confidence(bot):
@@ -256,19 +257,7 @@ def test_word_lists_satisfying_conditions_2(model):
         ],
     )
 
-    bot_response = bot.structure(list[str])
-    correct_answer = [
-        "Curugor",
-        "Crurung",
-        "Curuogr",
-        "Curingro",
-        "Crucugor",
-        "Curuogoru",
-        "Crurougo",
-        "Curugou",
-        "Curuogorc",
-        "Curuogoro",
-    ]
+    bot.structure(list[str])
     # Several models get this wrong and this test is mostly for making sure
     # mistral doesn't refuse to report a confidence.
     # assert bot_response == correct_answer

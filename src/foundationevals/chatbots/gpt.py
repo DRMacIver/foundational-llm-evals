@@ -1,4 +1,4 @@
-from foundationevals.chatbots.base import Chatbot, Message
+from foundationevals.chatbots.base import Chatbot
 
 
 class GPT(Chatbot):

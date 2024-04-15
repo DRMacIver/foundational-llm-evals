@@ -1,6 +1,3 @@
-import pytest
-
-
 def pytest_generate_tests(metafunc):
     if "model" in metafunc.fixturenames:
         models = ["llama2", "mistral"]

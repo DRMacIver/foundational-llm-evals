@@ -1,19 +1,21 @@
-from foundationevals.evaluations.evaluation import (
-    BasicEvaluation,
-    SingleProblemEvaluation,
-)
-from typing import Type, Any, TypeVar
-from foundationevals.chatbots import Chatbot
-from foundationevals.evaluations.wordgen import (
-    WordGenerationEvaluation,
-)
+import os
+from random import Random
+from typing import Any, TypeVar
+
 import pytest
+
+from foundationevals.chatbots import Chatbot
 from foundationevals.evaluations.arithmetic import (
     AdditionEvaluation,
     BaseConversionEvaluation,
 )
-import os
-from random import Random
+from foundationevals.evaluations.evaluation import (
+    BasicEvaluation,
+    SingleProblemEvaluation,
+)
+from foundationevals.evaluations.wordgen import (
+    WordGenerationEvaluation,
+)
 
 
 class TrivialEvaluation(BasicEvaluation[int]):
@@ -70,7 +72,7 @@ def test_dummy_has_a_zero_answer_rate(evaluation):
 
 
 @evaluations
-def test_can_produce_answers(evaluation: Type[BasicEvaluation[Any]]):
+def test_can_produce_answers(evaluation: type[BasicEvaluation[Any]]):
     ev = evaluation()
     cache_file = os.path.join(os.path.dirname(__file__), "cache.sqlite3")
 

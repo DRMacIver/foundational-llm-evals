@@ -1,4 +1,5 @@
 from functools import lru_cache
+
 from foundationevals.data.files import DATA_DIR
 
 

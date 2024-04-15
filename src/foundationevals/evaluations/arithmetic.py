@@ -1,15 +1,12 @@
-from foundationevals.evaluations.evaluation import (
-    ProblemSet,
-    SingleProblemEvaluation,
-    BasicEvaluation,
-)
-from foundationevals.evaluations.evaluation import (
-    ProblemSet,
-    SingleProblemEvaluation,
-    EvaluationResultStatus,
-)
-import pydantic
 from random import Random
+
+import pydantic
+
+from foundationevals.evaluations.evaluation import (
+    BasicEvaluation,
+    EvaluationResultStatus,
+    SingleProblemEvaluation,
+)
 
 
 class AdditionEvaluation(BasicEvaluation[tuple[int, int]]):
@@ -66,7 +63,7 @@ def int_to_base(n, base):
 
 class BaseConversionEvaluation(BasicEvaluation[BaseConversion]):
     def generate(self, random):
-        integer = random.randrange(0, 10 ** (random.randrange(1, 21)))
+        integer = random.randrange(0, 10 ** random.randrange(1, 21))
         from_base, to_base = random.sample(range(2, 17), 2)
         return BaseConversion(integer=integer, from_base=from_base, to_base=to_base)
 

@@ -392,7 +392,6 @@ class BasicEvaluation(Evaluation[Problem]):
         parallelism=1,
         reduce=False,
     ) -> FullReport[Problem]:
-
         chatbot.freeze()
         if random is None:
             random = Random()

@@ -59,7 +59,7 @@ class WordConstraints(BaseModel):
 
 class WordConstraintsProblemSet(ProblemSet[WordConstraints]):
     def generate(self, random: Random) -> WordConstraints:
-        working = list(word_list("sowpods"))
+        working = word_list("sowpods")
         rules = []
         while len(working) > 1:
             target1, target2 = random.sample(working, 2)

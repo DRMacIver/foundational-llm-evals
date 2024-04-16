@@ -32,6 +32,8 @@ class TrivialEvaluation(BasicEvaluation[int]):
             evaluation.add_error("Fake error for testing purposes")
 
 
+CACHE_ONLY = os.environ.get("UPDATE_CACHE", "") != "true"
+
 evaluations = pytest.mark.parametrize(
     "evaluation",
     [
@@ -59,6 +61,13 @@ def test_can_reduce_generated_problems(evaluation):
 
 
 @evaluations
+def test_problem_generation_is_stable(evaluation):
+    ev = evaluation()
+    ps = ev.problem_set
+    assert ps.generate(Random(13)) == ps.generate(Random(13))
+
+
+@evaluations
 def test_dummy_has_a_zero_answer_rate(evaluation):
     ev = evaluation()
 
@@ -77,7 +86,9 @@ def test_can_produce_answers(evaluation: type[BasicEvaluation[Any]]):
     cache_file = os.path.join(os.path.dirname(__file__), "cache.sqlite3")
 
     report = ev.run(
-        chatbot=Chatbot("llama2", temperature=0, index=0, storage=cache_file),
+        chatbot=Chatbot(
+            "llama2", temperature=0, index=0, storage=cache_file, cache_only=CACHE_ONLY
+        ),
         n_samples=5,
         reduce=False,
         stop_on_first_failure=False,
@@ -91,7 +102,9 @@ def test_can_reduce_trivial_evaluation():
     cache_file = os.path.join(os.path.dirname(__file__), "cache.sqlite3")
 
     report = ev.run(
-        chatbot=Chatbot("llama2", temperature=0, index=0, storage=cache_file),
+        chatbot=Chatbot(
+            "llama2", temperature=0, index=0, storage=cache_file, cache_only=CACHE_ONLY
+        ),
         n_samples=100,
         reduce=True,
         stop_on_first_failure=True,

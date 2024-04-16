@@ -185,11 +185,13 @@ class Chatbot:
         temperature: float = 0.0,
         max_tokens: int = 1024,
         messages: list[Message] | None = None,
+        cache_only: bool = False,
     ):
         self.model: str = model
         self.messages: list[Message] = [] if messages is None else list(messages)
         self.temperature: float = temperature
         self.max_tokens = max_tokens
+        self.cache_only = cache_only
         if storage is None:
             storage = Storage.default_storage()
         elif isinstance(storage, str):
@@ -231,7 +233,7 @@ class Chatbot:
                 # We always cache temperature=0 the same way because it's
                 # supposed to be deterministic.
                 self.index if self.temperature > 0 else 0,
-                self.complete,
+                self.__complete_if_not_cache_only,
             )
             saved_message = self.storage.get_message(result_id)
             assert saved_message is not None
@@ -248,6 +250,7 @@ class Chatbot:
         kwargs.setdefault("messages", self.messages)
         kwargs.setdefault("index", self.index)
         kwargs.setdefault("storage", self.storage)
+        kwargs.setdefault("cache_only", self.cache_only)
         result = self.__class__(**kwargs)
         self.children.append(result)
         return result
@@ -444,6 +447,11 @@ class Chatbot:
             raise FailedToAnswer("Chatbot failed to provide an answer to the question.")
 
     def new_client(self) -> Any: ...
+
+    def __complete_if_not_cache_only(self) -> str:
+        if self.cache_only:
+            raise AssertionError("Attempted to call model while cache only")
+        return self.complete()
 
     def complete(self) -> str:
         """Complete the current conversation with the assistant."""

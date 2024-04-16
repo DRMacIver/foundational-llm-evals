@@ -1,7 +1,8 @@
-from functools import lru_cache
 from bisect import bisect_left
-from foundationevals.data.files import DATA_DIR
 from collections.abc import Sequence
+from functools import lru_cache
+
+from foundationevals.data.files import DATA_DIR
 
 
 class WordList(Sequence[str]):

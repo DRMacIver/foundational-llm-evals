@@ -29,8 +29,6 @@ class AdditionEvaluation(BasicEvaluation[tuple[int, int]]):
         if m + n != result:
             evaluation.add_error("Incorrect sum")
 
-        print(m, n, evaluation.errors)
-
 
 class BaseConversion(pydantic.BaseModel):
     from_base: int = pydantic.Field(ge=2, le=16)

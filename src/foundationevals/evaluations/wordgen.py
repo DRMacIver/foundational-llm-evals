@@ -165,7 +165,6 @@ class WordGenerationEvaluation(BasicEvaluation[WordConstraints]):
                     )
 
         prompt = "\n".join(prompt_parts)
-        print(prompt)
 
         evaluation.chatbot.chat(prompt)
         results = evaluation.parse(list[str])

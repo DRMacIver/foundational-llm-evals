@@ -1,3 +1,5 @@
+import json
+import re
 import traceback
 from abc import ABC, abstractmethod
 from collections import deque
@@ -9,7 +11,7 @@ from typing import Any, Generic, TypeVar
 
 import trio
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
-from tqdm import tqdm, trange
+from tqdm import tqdm
 
 from foundationevals.chatbots.base import Chatbot, FailedToAnswer, Message
 from shrinkray.problem import BasicReductionProblem
@@ -24,6 +26,7 @@ class EvaluationResultStatus(Enum):
     INCOMPLETE = auto()
     NONANSWER = auto()
     ANSWER = auto()
+    UNHANDLED_ERROR = auto()
 
 
 class NoValidAnswer(Exception):
@@ -34,6 +37,7 @@ class ReportedStatus(Enum):
     CORRECT = auto()
     INCORRECT = auto()
     NONANSWER = auto()
+    UNHANDLED_ERROR = auto()
 
 
 class SingleProblemReport(BaseModel, Generic[Problem]):
@@ -47,7 +51,7 @@ class SingleProblemReport(BaseModel, Generic[Problem]):
 
 
 class SingleProblemEvaluation(Generic[Problem]):
-    def __init__(self, chatbot: Chatbot, problem: Problem):
+    def __init__(self, chatbot: Chatbot, problem: Problem, reraise_errors: bool):
         self.chatbot = chatbot
         self.problem: Problem = problem
         self.status: EvaluationResultStatus = EvaluationResultStatus.INCOMPLETE
@@ -55,14 +59,17 @@ class SingleProblemEvaluation(Generic[Problem]):
         self.notes: list[str] = []
         self.confidence: float | None = None
         self.stack_trace = None
+        self.reraise_errors = reraise_errors
+
+    def __mark_status(self, status):
+        self.__check_incomplete()
+        self.status = status
 
     def mark_nonanswer(self):
-        self.__check_incomplete()
-        self.status = EvaluationResultStatus.NONANSWER
+        self.__mark_status(EvaluationResultStatus.NONANSWER)
 
     def mark_answered(self):
-        self.__check_incomplete()
-        self.status = EvaluationResultStatus.ANSWER
+        self.__mark_status(EvaluationResultStatus.ANSWER)
 
     def record_confidence(self, confidence: float | None = None):
         if confidence is not None and not (0 <= confidence <= 1):
@@ -103,7 +110,9 @@ class SingleProblemEvaluation(Generic[Problem]):
             self.mark_nonanswer()
             raise NoValidAnswer()
         except Exception:
-            self.mark_nonanswer()
+            if self.reraise_errors:
+                raise
+            self.__mark_status(EvaluationResultStatus.UNHANDLED_ERROR)
             self.stack_trace = traceback.format_exc()
             raise NoValidAnswer()
 
@@ -111,11 +120,16 @@ class SingleProblemEvaluation(Generic[Problem]):
         if self.status == EvaluationResultStatus.INCOMPLETE:
             raise ValueError("Cannot report an incomplete scorecard.")
 
-        if self.confidence is None and self.status != EvaluationResultStatus.NONANSWER:
+        if self.confidence is None and self.status not in (
+            EvaluationResultStatus.NONANSWER,
+            EvaluationResultStatus.UNHANDLED_ERROR,
+        ):
             raise ValueError("Confidence must be recorded before reporting.")
 
         if self.status == EvaluationResultStatus.NONANSWER:
             status = ReportedStatus.NONANSWER
+        elif self.status == EvaluationResultStatus.UNHANDLED_ERROR:
+            status = ReportedStatus.UNHANDLED_ERROR
         elif self.errors:
             status = ReportedStatus.INCORRECT
         else:
@@ -271,7 +285,11 @@ class FullReport(BaseModel, Generic[Problem]):
             [
                 report
                 for report in self.initial_random_sample
-                if report.status != ReportedStatus.NONANSWER
+                if report.status
+                in (
+                    ReportedStatus.CORRECT,
+                    ReportedStatus.INCORRECT,
+                )
             ]
         )
 
@@ -294,6 +312,14 @@ class FullReport(BaseModel, Generic[Problem]):
                 if report.status == ReportedStatus.INCORRECT
             ]
         )
+
+    @cached_property
+    def unhandled_errors(self):
+        return [
+            report
+            for report in (self.initial_random_sample + self.other_samples)
+            if report.status == ReportedStatus.UNHANDLED_ERROR
+        ]
 
     @property
     def answer_rate(self):
@@ -329,7 +355,20 @@ class FullReport(BaseModel, Generic[Problem]):
         return result
 
 
+def camel_to_hyphen(identifier):
+    hyphenated = re.sub(r"(?<!^)(?=[A-Z])", "-", identifier)
+    hyphenated = hyphenated.lower()
+    return hyphenated
+
+
 class Evaluation(ABC, Generic[Problem]):
+    def __init__(self, name=None):
+        self.name = name or camel_to_hyphen(self.__class__.__name__)
+
+    @property
+    @abstractmethod
+    def problem_set(self) -> ProblemSet[Problem]: ...
+
     @abstractmethod
     def run(
         self,
@@ -340,6 +379,9 @@ class Evaluation(ABC, Generic[Problem]):
         stop_on_first_failure=False,
         parallelism=1,
         reduce=False,
+        pb=True,
+        reraise_errors=False,
+        storage=None,
     ) -> FullReport[Problem]: ...
 
 
@@ -361,8 +403,22 @@ class BasicEvaluationProblemSet(ProblemSet[Problem]):
         return self.evaluation.generate(random)
 
 
+CREATE_SINGLE_EVALS_TABLE = """
+create table if not exists single_evaluations(
+    id integer primary key,
+    evaluation_name text not null,
+    chatbot_name text not null,
+    problem_data text not null,
+    ix integer not null,
+    report_data text not null,
+    unique (evaluation_name, chatbot_name, problem_data, ix)
+)
+"""
+
+
 class BasicEvaluation(Evaluation[Problem]):
-    def __init__(self):
+    def __init__(self, name: str | None = None):
+        super().__init__(name=name)
         self.__problem_set = None
 
     def new_problem_set(self) -> ProblemSet[Problem]:
@@ -391,30 +447,97 @@ class BasicEvaluation(Evaluation[Problem]):
         stop_on_first_failure=False,
         parallelism=1,
         reduce=False,
+        pb=True,
+        reraise_errors=False,
+        storage=None,
     ) -> FullReport[Problem]:
         chatbot.freeze()
         if random is None:
             random = Random()
 
-        def evaluate_problem(problem: Problem) -> SingleProblemReport[Problem]:
+        assert random is not None
+
+        if storage is None:
+            storage = chatbot.storage
+
+        pb_wrapper: Callable[[Any], Any]
+        if pb:
+            pb_wrapper = tqdm
+        else:
+
+            def pb_wrapper(x):
+                return x
+
+        with storage.cursor() as cursor:
+            cursor.execute(CREATE_SINGLE_EVALS_TABLE)
+
+        problem_set = self.problem_set
+        report_adapter = TypeAdapter(SingleProblemReport[problem_set.problem_type])
+
+        def evaluate_problem(
+            problem: Problem, index: int = 0
+        ) -> SingleProblemReport[Problem]:
+            problem_data = problem_set.dump(problem)
+
+            with storage.cursor() as cursor:
+                cursor.execute(
+                    "select report_data from single_evaluations "
+                    "where evaluation_name = ? and chatbot_name = ? "
+                    "and problem_data = ? and ix = ?",
+                    (self.name, chatbot.name, problem_data, index),
+                )
+
+                for (result,) in cursor:
+                    data = json.loads(result)
+                    data["problem"] = problem
+                    data["transcripts"] = [
+                        storage.id_to_messages(t) for t in data["transcripts"]
+                    ]
+                    data["status"] = ReportedStatus[data["status"]]
+                    data["errors"] = set(data["errors"])
+                    return report_adapter.validate_python(data)
+
             problem_evaluation = SingleProblemEvaluation(
-                chatbot=chatbot.clone(),
+                chatbot=chatbot.clone(index=index),
                 problem=problem,
+                reraise_errors=reraise_errors,
             )
             try:
                 self.run_single_evaluation(problem_evaluation)
             except NoValidAnswer:
                 pass
-            return problem_evaluation.report()
+            report = problem_evaluation.report()
+            data_to_save = report_adapter.dump_python(report)
+            data_to_save.pop("problem")
+            data_to_save["transcripts"] = [
+                storage.messages_to_transcript_id(t)
+                for t in data_to_save["transcripts"]
+            ]
+            data_to_save["errors"] = sorted(data_to_save["errors"])
+            data_to_save["status"] = data_to_save["status"].name
+            with storage.cursor() as cursor:
+                cursor.execute(
+                    "insert into single_evaluations "
+                    "(evaluation_name, chatbot_name, problem_data, ix, report_data) "
+                    "values(?, ?, ?, ?, ?)",
+                    (
+                        self.name,
+                        chatbot.name,
+                        problem_data,
+                        index,
+                        json.dumps(data_to_save),
+                    ),
+                )
+
+            return report
 
         if stop_on_first_failure:
-            # TODO: Parallel find first
             parallelism = 1
 
         if parallelism == 1:
             if stop_on_first_failure:
                 initial_results = []
-                for _ in trange(n_samples):
+                for _ in pb_wrapper(range(n_samples)):
                     one_eval = evaluate_problem(self.problem_set.generate(random))
                     initial_results.append(one_eval)
                     if one_eval.status == ReportedStatus.INCORRECT:
@@ -422,15 +545,15 @@ class BasicEvaluation(Evaluation[Problem]):
             else:
                 initial_results = [
                     evaluate_problem(self.problem_set.generate(random))
-                    for _ in trange(n_samples)
+                    for _ in pb_wrapper(range(n_samples))
                 ]
         else:
             with ThreadPoolExecutor(max_workers=parallelism) as executor:
                 futures = [
                     executor.submit(evaluate_problem, self.problem_set.generate(random))
-                    for _ in trange(n_samples)
+                    for _ in pb_wrapper(range(n_samples))
                 ]
-                initial_results = [future.result() for future in tqdm(futures)]
+                initial_results = [future.result() for future in pb_wrapper(futures)]
 
         other_samples = []
         reduced_exemplar = None

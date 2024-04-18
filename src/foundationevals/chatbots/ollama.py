@@ -10,12 +10,12 @@ class Ollama(Chatbot):
         return ollama
 
     def complete(self):
-        # TODO: Ollama doesn't implement max_tokens
         response = self.client.chat(
             model=self.model,
             messages=self.messages,
             options={
                 "temperature": self.temperature,
+                "num_predict": self.max_tokens,
             },
         )["message"]
         return response["content"].strip()

@@ -9,7 +9,6 @@ from foundationevals.storage import Message, Storage
 
 T = TypeVar("T")
 
-
 REFUSAL_PHRASES = [
     "i'm sorry",
     "i apologize",
@@ -108,8 +107,13 @@ def conform_json_to_type(target_type: type[T], json_object: Any) -> T:
     except ValidationError:
         pass
 
-    if target_type == str and isinstance(json_object, (int, float)):
-        return str(json_object)  # type: ignore
+    if target_type == str:
+        if isinstance(json_object, (int, float)):
+            return str(json_object)  # type: ignore
+        elif isinstance(json_object, list) and all(
+            isinstance(a, str) for a in json_object
+        ):
+            return "".join(json_object)  # type: ignore
     if isinstance(json_object, dict):
         if len(json_object) == 1:
             (wrapped,) = json_object.values()
@@ -141,6 +145,14 @@ def conform_json_to_type(target_type: type[T], json_object: Any) -> T:
 
 
 YES_NO_ANSWER = re.compile(r"^(yes|no)\b", re.IGNORECASE)
+
+APOLOGIES = ["i apologize", "i'm sorry"]
+
+
+def is_apology(answer):
+    answer = answer.lower()
+    return any(apology in answer for apology in APOLOGIES)
+
 
 NUMERIC_LIST = re.compile(r"^[0-9]+\. (.+)$")
 
@@ -186,6 +198,7 @@ class Chatbot:
         max_tokens: int = 1024,
         messages: list[Message] | None = None,
         cache_only: bool = False,
+        name: str | None = None,
     ):
         self.model: str = model
         self.messages: list[Message] = [] if messages is None else list(messages)
@@ -202,11 +215,17 @@ class Chatbot:
         self.__client = None
         self.children = []
         self.__frozen = False
+        self.__name = name
 
     @property
     def name(self):
         """A stable name to use for this chatbot instance."""
-        return self.model
+        if self.__name is None:
+            parts = [f"temperature={self.temperature}"]
+            if self.index is not None:
+                parts.append(f"index={self.index}")
+            self.__name = f'{self.model}[{", ".join(parts)}]'
+        return self.__name
 
     def freeze(self):
         self.__frozen = True
@@ -312,14 +331,18 @@ class Chatbot:
         assert answer in ("yes", "no")
         if answer == "yes":
             # ok but did it really?
-            refusal_checking_bot.chat(
+            did_it_really = refusal_checking_bot.chat(
                 "Please point to the exact words in your response that answered my question."
             )
+            if is_apology(did_it_really):
+                return False
             confirmation = refusal_checking_bot.chat(
                 "Given this, do you still think your response contained the information I requested?"
             )
             match = YES_NO_ANSWER.match(confirmation)
             if match is None:
+                if is_apology(confirmation):
+                    return False
                 raise ResponseParsingError(
                     "Could not determine whether chatbot answered the question:\n\n"
                     + refusal_checking_bot.transcript()
@@ -423,7 +446,17 @@ class Chatbot:
             )
 
         validation_error = False
-        for parsed in reversed(extract_json_objects(response)):
+        objects = extract_json_objects(response)
+        if not objects:
+            response = structuring_bot.chat(
+                "Sorry that doesn't look like valid JSON. Can you try again?"
+            )
+            objects = extract_json_objects(response)
+            if not objects:
+                raise FailedToAnswer(
+                    "Chatbot failed to provide an answer to the question."
+                )
+        for parsed in reversed(objects):
             try:
                 return conform_json_to_type(target, parsed)
             except ValidationError:

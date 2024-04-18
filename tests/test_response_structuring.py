@@ -324,6 +324,10 @@ def test_can_extract_data_stupidly_put_in_type_field():
     assert conform_json_to_type(str, {"type": "hello"}) == "hello"
 
 
+def test_will_concatenate_arrays_of_strings():
+    assert conform_json_to_type(str, ["a", "b", "c"]) == "abc"
+
+
 def test_can_get_numeric_string_answer_out_of_indirect_response(model):
     bot = Chatbot(
         model,
